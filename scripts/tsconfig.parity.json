@@ -1,0 +1,1 @@
+{"compilerOptions":{"declaration":false,"module":"commonjs","noEmit":false,"outDir":"/tmp/parity_build","rootDir":"../src","sourceMap":false,"target":"es2020"},"extends":"../tsconfig.json","include":["../src/model/**/*.ts"]}
