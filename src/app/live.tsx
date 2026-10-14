@@ -1,0 +1,326 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  LIVE_BUCKETS,
+  LiveGame,
+  LiveGameState,
+  LiveMatch,
+  bucketFor,
+  elapsedMinutes,
+  fetchLiveGame,
+  fetchLiveMatches,
+  fetchWindow,
+  liveProba,
+  mapTeamCode,
+  preLogit,
+  snapshot,
+} from '../model/live';
+import { predictMatchup } from '../model/predict';
+import { usePrediction } from '../state/PredictionContext';
+import { C, S } from '../theme';
+
+const POLL_MS = 12000;
+
+function ProbBar({ pBlue, blue, red }: { pBlue: number; blue: string; red: string }) {
+  const pct = Math.round(pBlue * 100);
+  return (
+    <View>
+      <View style={styles.probRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.probTeam, { color: C.blue }]} numberOfLines={1}>
+            {blue}
+          </Text>
+          <Text style={styles.probBig}>{pct}%</Text>
+        </View>
+        <View style={{ flex: 1, alignItems: 'flex-end' }}>
+          <Text style={[styles.probTeam, { color: C.red }]} numberOfLines={1}>
+            {red}
+          </Text>
+          <Text style={styles.probBig}>{100 - pct}%</Text>
+        </View>
+      </View>
+      <View style={styles.bar}>
+        <View style={[styles.barFill, { flex: pBlue, backgroundColor: C.blue }]} />
+        <View style={[styles.barFill, { flex: 1 - pBlue, backgroundColor: C.red }]} />
+      </View>
+    </View>
+  );
+}
+
+function StatCell({ label, blue, red }: { label: string; blue: string; red: string }) {
+  return (
+    <View style={styles.statCell}>
+      <Text style={[styles.statVal, { color: C.blue }]}>{blue}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+      <Text style={[styles.statVal, { color: C.red }]}>{red}</Text>
+    </View>
+  );
+}
+
+export default function LiveScreen() {
+  const { result: ctxResult } = usePrediction();
+  const [matches, setMatches] = useState<LiveMatch[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [match, setMatch] = useState<LiveMatch | null>(null);
+  const [game, setGame] = useState<LiveGame | null>(null);
+  const [swapped, setSwapped] = useState(false);
+  const [snap, setSnap] = useState<LiveGameState | null>(null);
+  const [liveP, setLiveP] = useState<number | null>(null);
+  const [preP, setPreP] = useState<number | null>(null);
+  const [priorNote, setPriorNote] = useState<string | null>(null);
+  const [feedDown, setFeedDown] = useState(false);
+  const [ended, setEnded] = useState(false);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // team assignment: feed blue/red side <-> model team (user can swap)
+  const blueTeam = swapped ? match?.redCode : match?.blueCode;
+  const redTeam = swapped ? match?.blueCode : match?.redCode;
+  const blueModel = blueTeam ? mapTeamCode(blueTeam) ?? blueTeam : null;
+  const redModel = redTeam ? mapTeamCode(redTeam) ?? redTeam : null;
+
+  const loadMatches = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setMatches(await fetchLiveMatches());
+    } catch (e) {
+      setError('Could not reach the LoL Esports API.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadMatches();
+  }, [loadMatches]);
+
+  const stopPoll = useCallback(() => {
+    if (timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+    }
+  }, []);
+
+  useEffect(() => stopPoll, [stopPoll]);
+
+  const poll = useCallback(
+    async (gameId: string) => {
+      const frames = await fetchWindow(gameId);
+      if (frames.length === 0) {
+        setFeedDown(true);
+        return;
+      }
+      setFeedDown(false);
+      const last = frames[frames.length - 1];
+      if (last.gameState !== 'in_game') {
+        setEnded(true);
+        stopPoll();
+      }
+      const s = snapshot(frames);
+      setSnap(s);
+      if (s && blueModel && redModel) {
+        // Prior: prefer a draft-adjusted prediction for this exact matchup
+        // (run on the Predict tab); fall back to the pre-draft model.
+        let priorP: number;
+        let note: string | null = null;
+        const r = ctxResult;
+        const sameSides = r && r.blue === blueModel && r.red === redModel;
+        const flippedSides = r && r.blue === redModel && r.red === blueModel;
+        if (r && r.mode === 'draft' && (sameSides || flippedSides)) {
+          priorP = sameSides ? r.pBlue : 1 - r.pBlue;
+          note = 'using draft-adjusted prior';
+        } else {
+          priorP = predictMatchup(blueModel, redModel, null, { eloField: 'elo' }).pBlue;
+        }
+        setPreP(priorP);
+        setPriorNote(note);
+        const b = bucketFor(s.minutes);
+        if (b !== null) {
+          const lr = liveProba(
+            { preLogit: preLogit(priorP), goldDiffK: s.goldDiffK, killDiff: s.killDiff },
+            b,
+          );
+          setLiveP(lr ? lr.pCal : null);
+        } else {
+          setLiveP(null); // <10 min: fall back to pre-game
+        }
+      }
+    },
+    [blueModel, redModel, stopPoll, ctxResult],
+  );
+
+  const selectMatch = useCallback(
+    async (m: LiveMatch) => {
+      stopPoll();
+      setMatch(m);
+      setSwapped(false);
+      setSnap(null);
+      setLiveP(null);
+      setPreP(null);
+      setPriorNote(null);
+      setEnded(false);
+      setFeedDown(false);
+      setError(null);
+      try {
+        const g = await fetchLiveGame(m.matchId);
+        if (!g) {
+          setError('No game found for this match.');
+          return;
+        }
+        setGame(g);
+        await poll(g.gameId);
+        timer.current = setInterval(() => void poll(g.gameId), POLL_MS);
+      } catch {
+        setError('Could not load game details.');
+      }
+    },
+    [poll, stopPoll],
+  );
+
+  const back = useCallback(() => {
+    stopPoll();
+    setMatch(null);
+    setGame(null);
+    setSnap(null);
+    setLiveP(null);
+    setPreP(null);
+    setPriorNote(null);
+    setEnded(false);
+  }, [stopPoll]);
+
+  const shownP = liveP ?? preP;
+  const bucket = snap ? bucketFor(snap.minutes) : null;
+
+  return (
+    <SafeAreaView style={S.screen}>
+      <ScrollView contentContainerStyle={S.scroll}>
+        <Text style={S.h1}>Live win probability</Text>
+        <Text style={S.dim}>
+          Pre-game model + live gold/kill state, recalibrated per game minute. Polls the LoL
+          Esports feed every {POLL_MS / 1000}s.
+        </Text>
+
+        {error && (
+          <View style={[S.card, { borderColor: C.red }]}>
+            <Text style={[S.body, { color: C.red }]}>{error}</Text>
+          </View>
+        )}
+
+        {!match && (
+          <>
+            <Pressable style={[S.btn, { marginBottom: 12 }]} onPress={() => void loadMatches()}>
+              <Text style={S.btnText}>{loading ? 'Checking…' : 'Refresh live matches'}</Text>
+            </Pressable>
+            {!loading && matches.length === 0 && !error && (
+              <View style={S.card}>
+                <Text style={S.body}>No live games right now.</Text>
+                <Text style={S.dim}>Worlds 2026 Play-In starts Oct 16 — check back during a match.</Text>
+              </View>
+            )}
+            {matches.map((m) => (
+              <Pressable key={m.matchId} style={S.card} onPress={() => void selectMatch(m)}>
+                <Text style={S.label}>{m.league}</Text>
+                <Text style={S.h2}>
+                  {m.blueCode} <Text style={S.faint}>vs</Text> {m.redCode}
+                </Text>
+                <Text style={S.dim}>
+                  {m.blueName} vs {m.redName}
+                  {m.strategy ? ` · ${m.strategy}` : ''}
+                </Text>
+              </Pressable>
+            ))}
+          </>
+        )}
+
+        {match && (
+          <>
+            <Pressable style={[S.chip, { alignSelf: 'flex-start', marginBottom: 12 }]} onPress={back}>
+              <Text style={S.chipText}>← All live matches</Text>
+            </Pressable>
+
+            <View style={S.card}>
+              <Text style={S.label}>Watching</Text>
+              <Text style={S.h2}>
+                {match.blueCode} vs {match.redCode}
+                {match.strategy ? ` · ${match.strategy}` : ''}
+                {game ? ` · Game ${game.number}` : ''}
+              </Text>
+              <View style={[S.row, { marginTop: 8, justifyContent: 'space-between' }]}>
+                <Text style={S.dim}>
+                  Feed blue: <Text style={{ color: C.blue }}>{blueTeam}</Text>
+                  {'  '}Feed red: <Text style={{ color: C.red }}>{redTeam}</Text>
+                </Text>
+                <Pressable style={S.chip} onPress={() => setSwapped((s) => !s)}>
+                  <Text style={S.chipText}>Swap sides</Text>
+                </Pressable>
+              </View>
+              {ended && <Text style={[S.body, { color: C.amber, marginTop: 8 }]}>Game ended.</Text>}
+              {feedDown && (
+                <Text style={[S.body, { color: C.amber, marginTop: 8 }]}>
+                  Live feed unavailable — showing pre-game probability.
+                </Text>
+              )}
+            </View>
+
+            {shownP !== null && blueModel && redModel && (
+              <View style={S.card}>
+                <ProbBar pBlue={shownP} blue={blueModel} red={redModel} />
+                <Text style={[S.faint, { marginTop: 8 }]}>
+                  {liveP !== null && bucket !== null
+                    ? `Live t=${bucket} model · ${snap!.minutes.toFixed(1)} min elapsed`
+                    : snap
+                      ? `Game under 10 min — pre-game model (${snap.minutes.toFixed(1)} min)`
+                      : 'Pre-game model'}
+                  {priorNote ? ` · ${priorNote}` : ''}
+                </Text>
+              </View>
+            )}
+
+            {snap && (
+              <View style={S.card}>
+                <Text style={S.label}>Game state</Text>
+                <View style={S.row}>
+                  <StatCell
+                    label="Gold diff (k)"
+                    blue={(snap.goldDiffK >= 0 ? '+' : '') + snap.goldDiffK.toFixed(1)}
+                    red={(snap.goldDiffK <= 0 ? '+' : '') + (-snap.goldDiffK).toFixed(1)}
+                  />
+                  <StatCell
+                    label="Kills"
+                    blue={String(Math.max(0, snap.killDiff))}
+                    red={String(Math.max(0, -snap.killDiff))}
+                  />
+                  <StatCell
+                    label="Towers"
+                    blue={String(snap.blueTowers)}
+                    red={String(snap.redTowers)}
+                  />
+                </View>
+                <Text style={[S.dim, { marginTop: 8 }]}>
+                  Dragons — <Text style={{ color: C.blue }}>{snap.blueDragons.length || '–'}</Text>
+                  {' / '}
+                  <Text style={{ color: C.red }}>{snap.redDragons.length || '–'}</Text>
+                  {'  '}· Barons —{' '}
+                  <Text style={{ color: C.blue }}>{snap.blueBarons}</Text> /{' '}
+                  <Text style={{ color: C.red }}>{snap.redBarons}</Text>
+                </Text>
+              </View>
+            )}
+          </>
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  probRow: { flexDirection: 'row', marginBottom: 8 },
+  probTeam: { fontSize: 13, fontWeight: '700' },
+  probBig: { color: '#F2F5FA', fontSize: 44, fontWeight: '800' },
+  bar: { flexDirection: 'row', height: 10, borderRadius: 5, overflow: 'hidden' },
+  barFill: { height: '100%' },
+  statCell: { flex: 1, alignItems: 'center' },
+  statVal: { fontSize: 18, fontWeight: '800' },
+  statLabel: { color: '#5E6B8C', fontSize: 11, marginVertical: 2 },
+});

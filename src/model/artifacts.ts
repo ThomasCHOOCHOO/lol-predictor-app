@@ -1,5 +1,14 @@
 import raw from '../data/phone_artifacts.json';
-import type { Artifacts, TeamRecord } from './types';
+import type {
+  Artifacts,
+  CalibrationBin,
+  CalibrationMap,
+  DraftInput,
+  LiveModelJson,
+  ModelJson,
+  PredictionResult,
+  TeamRecord,
+} from './types';
 
 const A = raw as unknown as Artifacts;
 
@@ -27,6 +36,9 @@ export const MODEL_VERSION: string = A.model_version;
 export const SNAPSHOT_DATE: string = A.snapshot_date;
 
 export const MODELS = A.models;
+export const LIVE_MODELS: Record<string, LiveModelJson> | undefined = A.live_models as
+  | Record<string, LiveModelJson>
+  | undefined;
 export const BLUE_EDGE: number = A.blue_edge;
 export const TEAMS: Record<string, TeamRecord> = A.teams;
 export const TEAM_ALIASES: Record<string, string> = A.team_aliases;

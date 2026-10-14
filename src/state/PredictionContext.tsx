@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, type ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import type { OddsEvent } from '../model/odds';
 import type { PredictionResult } from '../model/types';
 
 export type KellySide = 'blue' | 'red';
@@ -13,19 +14,37 @@ interface PredictionState {
   setOddsText: (s: string) => void;
   bankrollText: string;
   setBankrollText: (s: string) => void;
+  /** Pinnacle's decimal prices for the current result (blue/red), from the Odds tab tap. Null when unknown. */
+  pinBlue: number | null;
+  setPinBlue: (n: number | null) => void;
+  pinRed: number | null;
+  setPinRed: (n: number | null) => void;
+  /** Last odds fetch from the Odds tab, shared so the Parlay tab can build legs from it. */
+  oddsEvents: OddsEvent[];
+  setOddsEvents: (e: OddsEvent[]) => void;
 }
 
 const Ctx = createContext<PredictionState | null>(null);
 
 export function PredictionProvider({ children }: { children: ReactNode }) {
-  const [result, setResult] = useState<PredictionResult | null>(null);
+  const [result, setResultState] = useState<PredictionResult | null>(null);
   const [kellySide, setKellySide] = useState<KellySide>('blue');
   const [oddsText, setOddsText] = useState('');
   const [bankrollText, setBankrollText] = useState('');
+  const [pinBlue, setPinBlue] = useState<number | null>(null);
+  const [pinRed, setPinRed] = useState<number | null>(null);
+  const [oddsEvents, setOddsEvents] = useState<OddsEvent[]>([]);
+
+  // A new prediction invalidates any stored Pinnacle prices (callers set them after).
+  const setResult = useCallback((r: PredictionResult | null) => {
+    setResultState(r);
+    setPinBlue(null);
+    setPinRed(null);
+  }, []);
 
   return (
     <Ctx.Provider
-      value={{ result, setResult, kellySide, setKellySide, oddsText, setOddsText, bankrollText, setBankrollText }}
+      value={{ result, setResult, kellySide, setKellySide, oddsText, setOddsText, bankrollText, setBankrollText, pinBlue, setPinBlue, pinRed, setPinRed, oddsEvents, setOddsEvents }}
     >
       {children}
     </Ctx.Provider>

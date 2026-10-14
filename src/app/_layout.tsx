@@ -35,6 +35,27 @@ export default function RootLayout() {
           }}
         />
         <Tabs.Screen
+          name="live"
+          options={{
+            title: 'Live',
+            tabBarIcon: ({ focused }) => <TabIcon label="📡" focused={focused} />,
+          }}
+        />
+        <Tabs.Screen
+          name="odds"
+          options={{
+            title: 'Odds',
+            tabBarIcon: ({ focused }) => <TabIcon label="🎲" focused={focused} />,
+          }}
+        />
+        <Tabs.Screen
+          name="parlay"
+          options={{
+            title: 'Parlay',
+            tabBarIcon: ({ focused }) => <TabIcon label="🧩" focused={focused} />,
+          }}
+        />
+        <Tabs.Screen
           name="info"
           options={{
             title: 'Model',

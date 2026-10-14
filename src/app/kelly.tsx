@@ -1,12 +1,12 @@
 import { router } from 'expo-router';
 import React, { useMemo } from 'react';
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { KELLY_CAVEAT, fmtMoney, fmtPct, kelly } from '../model/kelly';
+import { KELLY_CAVEAT, agreementAdjust, binNForP, fmtMoney, fmtPct, kelly, recommendKelly } from '../model/kelly';
 import { usePrediction, type KellySide } from '../state/PredictionContext';
 import { C, S } from '../theme';
 
 export default function KellyScreen() {
-  const { result, kellySide, setKellySide, oddsText, setOddsText, bankrollText, setBankrollText } = usePrediction();
+  const { result, kellySide, setKellySide, oddsText, setOddsText, bankrollText, setBankrollText, pinBlue, pinRed } = usePrediction();
 
   const p = useMemo(() => {
     if (!result) return null;
@@ -18,6 +18,21 @@ export default function KellyScreen() {
   const bankroll = parseFloat(bankrollText.replace(',', '.'));
   const k = p !== null ? kelly(odds, p) : null;
   const hasBankroll = Number.isFinite(bankroll) && bankroll > 0;
+  const rec = k && k.bet ? recommendKelly(k.edge, binNForP(k.p)) : null;
+
+  // Smart-money agreement: Pinnacle's price on this side vs the book's price.
+  const dPinX = kellySide === 'blue' ? pinBlue : pinRed;
+  const dPinOther = kellySide === 'blue' ? pinRed : pinBlue;
+  const agr = k && k.bet && rec ? agreementAdjust(k.p, k.odds, dPinX, dPinOther, rec.frac) : null;
+  const finalFrac = agr ? agr.adjFrac : (rec ? rec.frac : null);
+  const reason = rec
+    ? rec.reason +
+      (agr && agr.agrees === true
+        ? ' Pinnacle agrees.'
+        : agr && agr.agrees === false
+          ? ' Pinnacle disagrees — sizing down.'
+          : '')
+    : '';
 
   const stake = (frac: number) =>
     k && hasBankroll ? fmtMoney(Math.max(0, k.fStar * frac) * bankroll) : '—';
@@ -94,9 +109,19 @@ export default function KellyScreen() {
                     <Text style={[S.dim, { marginBottom: 12 }]}>
                       Model {fmtPct(k.p, 1)} vs implied {fmtPct(k.implied, 1)} on {sideName} @ {k.odds.toFixed(2)}
                     </Text>
-                    <KellyRow label="Full Kelly" frac={1} fStar={k.fStar} amount={stake(1)} highlight={false} />
-                    <KellyRow label="Half Kelly ★ default" frac={0.5} fStar={k.fStar} amount={stake(0.5)} highlight />
-                    <KellyRow label="Quarter Kelly" frac={0.25} fStar={k.fStar} amount={stake(0.25)} highlight={false} />
+                    <KellyRow label="Full Kelly" frac={1} fStar={k.fStar} amount={stake(1)} highlight={finalFrac === 1} recommended={finalFrac === 1} />
+                    <KellyRow label="Half Kelly" frac={0.5} fStar={k.fStar} amount={stake(0.5)} highlight={finalFrac === 0.5} recommended={finalFrac === 0.5} />
+                    <KellyRow label="Quarter Kelly" frac={0.25} fStar={k.fStar} amount={stake(0.25)} highlight={finalFrac === 0.25} recommended={finalFrac === 0.25} />
+                    {rec && (
+                      <Text style={[S.dim, { marginTop: 10 }]}>
+                        {reason}
+                      </Text>
+                    )}
+                    {agr && (
+                      <Text style={[S.dim, { marginTop: 6 }]}>
+                        {agr.agrees === true ? '✓ ' : agr.agrees === false ? '⚠ ' : '• '}{agr.note}
+                      </Text>
+                    )}
                     {!hasBankroll && (
                       <Text style={[S.faint, { marginTop: 8 }]}>Enter a bankroll to see dollar stakes.</Text>
                     )}
@@ -128,14 +153,14 @@ export default function KellyScreen() {
   );
 }
 
-function KellyRow({ label, frac, fStar, amount, highlight }: {
-  label: string; frac: number; fStar: number; amount: string; highlight: boolean;
+function KellyRow({ label, frac, fStar, amount, highlight, recommended }: {
+  label: string; frac: number; fStar: number; amount: string; highlight: boolean; recommended: boolean;
 }) {
   const pct = Math.max(0, fStar * frac);
   return (
     <View style={[styles.krow, highlight && styles.krowHi]}>
       <View>
-        <Text style={[S.body, { fontWeight: '700' }]}>{label}</Text>
+        <Text style={[S.body, { fontWeight: '700' }]}>{label}{recommended ? ' ★' : ''}</Text>
         <Text style={S.dim}>{fmtPct(pct, 2)} of bankroll</Text>
       </View>
       <Text style={[styles.amount, highlight && { color: C.green }]}>{amount}</Text>
