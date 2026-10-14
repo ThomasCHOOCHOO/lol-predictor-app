@@ -19,11 +19,20 @@ export interface ModelJson {
   calibration: CalibrationMap;
 }
 
+export interface LiveModelJson {
+  model_type: string;
+  features: string[]; // ["pre_logit", "golddiff_k", "killdiff"] — no scaler
+  coef: number[];
+  intercept: number;
+  calibration: CalibrationMap;
+}
+
 export interface TeamRecord {
   elo: number; // roster-adjusted (what predictions use)
   elo_raw: number; // pre-adjustment snapshot Elo
   roster_delta: number;
-  form: number;
+  form: number; // trailing-20 win rate (comfort fallback only since v1.3.0)
+  eg_gold: number; // trailing-20 mean own-side gold diff at 15, shrunk (v1.3.0+)
   turnover_2025_2026: number | null;
   roster_2025: string[];
   roster_2026: string[];
@@ -42,6 +51,8 @@ export interface Artifacts {
   snapshot_date: string;
   generated_at: string;
   models: { full: ModelJson; nodraft: ModelJson };
+  /** v1.3+: per-bucket live in-game models, keyed "10" | "15" | "20" | "25". */
+  live_models?: Record<string, LiveModelJson>;
   blue_edge: number;
   teams: Record<string, TeamRecord>;
   team_aliases: Record<string, string>;

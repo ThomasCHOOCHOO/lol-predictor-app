@@ -54,7 +54,7 @@ def predict(d, blue, red, draft, patch, elo_field="elo_raw"):
     tb, tr = d["teams"][blue], d["teams"][red]
     feats = {
         "elo_diff": tb[elo_field] - tr[elo_field],
-        "form_diff": tb["form"] - tr["form"],
+        "eg_gold_diff": tb["eg_gold"] - tr["eg_gold"],
         "blue_edge": d["blue_edge"],
     }
     if draft:

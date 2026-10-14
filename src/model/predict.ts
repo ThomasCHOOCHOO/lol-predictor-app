@@ -50,7 +50,7 @@ export function isotonicCalibrate(pRaw: number, cal: CalibrationMap): number {
 /**
  * Feature math mirrors src/predict.py::predict_game + draft_features exactly:
  *   elo_diff    = elo(blue) - elo(red)
- *   form_diff   = form(blue) - form(red)
+ *   eg_gold_diff = eg_gold(blue) - eg_gold(red)  (v1.3.0+; replaces form_diff)
  *   blue_edge   = trailing-90d global blue-side win rate (constant in artifact)
  *   d_power     = sum(power(blue picks)) - sum(power(red picks))
  *   d_comfort   = sum(comfort(blue, c)) - sum(comfort(red, c)); missing -> team form
@@ -68,12 +68,14 @@ export function computeFeatures(
   const tr = TEAMS[red];
   const eb = tb ? tb[eloField] : 1500.0;
   const er = tr ? tr[eloField] : 1500.0;
-  const fb = tb ? tb.form : 0.5;
+  const gb = tb ? tb.eg_gold : 0.0;
+  const gr = tr ? tr.eg_gold : 0.0;
+  const fb = tb ? tb.form : 0.5; // comfort fallback only (not a model feature)
   const fr = tr ? tr.form : 0.5;
 
   const feats: Record<string, number> = {
     elo_diff: eb - er,
-    form_diff: fb - fr,
+    eg_gold_diff: gb - gr,
     blue_edge: BLUE_EDGE,
   };
 

@@ -226,7 +226,7 @@ export default function PredictScreen() {
               {result.mode === 'draft' ? (
                 <>
                   <FeatRow k="Elo diff" v={result.features.elo_diff} fmt={(x) => `${x >= 0 ? '+' : ''}${x.toFixed(0)}`} />
-                  <FeatRow k="Form diff" v={result.features.form_diff} fmt={(x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}pp`} />
+                  <FeatRow k="Gold@15 diff" v={result.features.eg_gold_diff} fmt={(x) => `${x >= 0 ? '+' : ''}${x.toFixed(0)}g`} />
                   <FeatRow k="Champ power Δ" v={result.features.d_power} fmt={(x) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`} />
                   <FeatRow k="Comfort Δ" v={result.features.d_comfort} fmt={(x) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`} />
                   <FeatRow k="Ban edge" v={result.features.ban_edge} fmt={(x) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`} />
@@ -234,7 +234,7 @@ export default function PredictScreen() {
               ) : (
                 <>
                   <FeatRow k="Elo diff" v={result.features.elo_diff} fmt={(x) => `${x >= 0 ? '+' : ''}${x.toFixed(0)}`} />
-                  <FeatRow k="Form diff" v={result.features.form_diff} fmt={(x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}pp`} />
+                  <FeatRow k="Gold@15 diff" v={result.features.eg_gold_diff} fmt={(x) => `${x >= 0 ? '+' : ''}${x.toFixed(0)}g`} />
                 </>
               )}
             </View>

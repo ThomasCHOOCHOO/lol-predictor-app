@@ -53,7 +53,8 @@ export default function InfoScreen() {
         <View style={S.card}>
           <Text style={S.h2}>Features</Text>
           <Text style={S.dim}>
-            elo_diff (roster-adjusted), form_diff (trailing-20 win rate), blue_edge (blue-side win rate),
+            elo_diff (roster-adjusted), eg_gold_diff (trailing-20 avg gold diff at 15 min),
+            blue_edge (blue-side win rate),
             d_power (champion strength by patch), d_comfort (team-champion win rate), ban_edge.
             Standardized, logistic regression, then isotonic calibration maps the raw score to an honest probability.
           </Text>
