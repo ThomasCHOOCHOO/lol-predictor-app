@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { fmtMoney, fmtPct } from '../model/kelly';
+import { fmtMoney, fmtPct, parseOddsInput } from '../model/kelly';
 import { bestPrices, mapOddsTeamName, type OddsEvent } from '../model/odds';
 import {
   PARLAY_CAVEAT,
@@ -71,18 +71,19 @@ export default function ParlayScreen() {
       setFormError('Pick two different teams.');
       return;
     }
-    const d = parseFloat(odds.replace(',', '.'));
-    if (!(d > 1)) {
-      setFormError('Enter decimal odds above 1.00 for your side.');
+    const parsed = parseOddsInput(odds);
+    if (!parsed) {
+      setFormError('Enter decimal odds above 1.00 or American odds ±100+ for your side.');
       return;
     }
+    const d = parsed.decimal;
     const res = predictMatchup(a, b, null, { eloField: 'elo' });
     const p = side === 'A' ? res.pBlue : 1 - res.pBlue;
     if (!(p >= 0.05)) {
       setFormError(`Model probability ${fmtPct(p)} is below 5% — excluded from combos.`);
       return;
     }
-    const od = parseFloat(oppOdds.replace(',', '.'));
+    const oppParsed = oppOdds.trim() ? parseOddsInput(oppOdds) : null;
     const team = side === 'A' ? a : b;
     const opp = side === 'A' ? b : a;
     pushLeg({
@@ -94,7 +95,7 @@ export default function ParlayScreen() {
       p,
       book: book.trim() || '—',
       odds: d,
-      oppOdds: od > 1 ? od : null,
+      oppOdds: oppParsed ? oppParsed.decimal : null,
     });
   };
 
@@ -103,11 +104,12 @@ export default function ParlayScreen() {
       setFormError('Enter both teams so the leg can be matched to a game.');
       return;
     }
-    const d = parseFloat(odds.replace(',', '.'));
-    if (!(d > 1)) {
-      setFormError('Enter decimal odds above 1.00.');
+    const parsed = parseOddsInput(odds);
+    if (!parsed) {
+      setFormError('Enter decimal odds above 1.00 or American odds ±100+.');
       return;
     }
+    const d = parsed.decimal;
     const line = parseFloat(totalsLine.replace(',', '.'));
     if (!(line > 0)) {
       setFormError('Enter a valid maps line (e.g. 4.5).');
@@ -244,18 +246,22 @@ export default function ParlayScreen() {
                 />
                 <TextInput
                   style={[S.input, { flex: 1 }]}
-                  placeholder="Your odds (1.85)"
+                  placeholder="Your odds (1.85 or -122)"
                   placeholderTextColor={C.faint}
-                  keyboardType="decimal-pad"
+                  keyboardType="numbers-and-punctuation"
+                  autoCapitalize="none"
+                  autoCorrect={false}
                   value={odds}
                   onChangeText={setOdds}
                 />
               </View>
               <TextInput
                 style={[S.input, { marginBottom: 10 }]}
-                placeholder="Opponent odds, optional (for favorite check)"
+                placeholder="Opponent odds, optional (1.85 or -122)"
                 placeholderTextColor={C.faint}
-                keyboardType="decimal-pad"
+                keyboardType="numbers-and-punctuation"
+                autoCapitalize="none"
+                autoCorrect={false}
                 value={oppOdds}
                 onChangeText={setOppOdds}
               />
@@ -296,9 +302,11 @@ export default function ParlayScreen() {
                 />
                 <TextInput
                   style={[S.input, { flex: 1 }]}
-                  placeholder="Odds (1.90)"
+                  placeholder="Odds (1.90 or -122)"
                   placeholderTextColor={C.faint}
-                  keyboardType="decimal-pad"
+                  keyboardType="numbers-and-punctuation"
+                  autoCapitalize="none"
+                  autoCorrect={false}
                   value={odds}
                   onChangeText={setOdds}
                 />

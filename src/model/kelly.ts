@@ -2,6 +2,71 @@
 import { CALIBRATION_TABLE } from './artifacts';
 import type { CalibrationBin } from './types';
 
+/* ------------------------- odds formats ------------------------- */
+
+/**
+ * American -> decimal. American odds are integers with |odds| >= 100
+ * (-110 = risk $110 to win $100; +150 = win $150 on $100).
+ * Returns null for invalid input (0, |odds| < 100, non-finite).
+ */
+export function americanToDecimal(american: number): number | null {
+  if (!Number.isFinite(american) || american === 0 || Math.abs(american) < 100) return null;
+  return american > 0 ? 1 + american / 100 : 1 + 100 / Math.abs(american);
+}
+
+/**
+ * Decimal -> American (rounded to the nearest whole number).
+ * Returns null for decimal <= 1 or non-finite input.
+ */
+export function decimalToAmerican(decimal: number): number | null {
+  if (!Number.isFinite(decimal) || decimal <= 1) return null;
+  return decimal >= 2 ? Math.round((decimal - 1) * 100) : Math.round(-100 / (decimal - 1));
+}
+
+export interface ParsedOdds {
+  /** Decimal odds (the canonical form Kelly math uses). */
+  decimal: number;
+  /** Which format the input was detected as. */
+  format: 'decimal' | 'american';
+  /** Equivalent American odds (rounded), for display. */
+  american: number;
+}
+
+/**
+ * Parse an odds field that accepts EITHER decimal or American odds.
+ *
+ * Detection (no toggle needed):
+ * - starts with + or - (e.g. -222, +183) -> American (must be an integer, |odds| >= 100)
+ * - bare integer >= 100 (e.g. 222) -> American +222 (decimal odds that large don't exist in practice)
+ * - anything else (e.g. 1.85) -> decimal, must be > 1
+ *
+ * Returns null for empty / incomplete / invalid input (e.g. "-", "0", "-50").
+ */
+export function parseOddsInput(text: string): ParsedOdds | null {
+  const s = text.trim().replace(',', '.');
+  if (!s) return null;
+  if (s.startsWith('+') || s.startsWith('-')) {
+    if (!/^[+-]\d+$/.test(s)) return null;
+    const american = parseInt(s, 10);
+    const decimal = americanToDecimal(american);
+    if (decimal === null) return null;
+    return { decimal, format: 'american', american };
+  }
+  const v = Number(s);
+  if (!Number.isFinite(v)) return null;
+  if (v >= 100) {
+    // Bare large integer: American without the + sign.
+    if (!Number.isInteger(v)) return null;
+    const decimal = americanToDecimal(v);
+    if (decimal === null) return null;
+    return { decimal, format: 'american', american: v };
+  }
+  if (v <= 1) return null;
+  const american = decimalToAmerican(v);
+  if (american === null) return null;
+  return { decimal: v, format: 'decimal', american };
+}
+
 export interface KellyResult {
   odds: number;
   p: number; // model's calibrated win probability for the chosen side

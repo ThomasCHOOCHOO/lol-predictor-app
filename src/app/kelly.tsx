@@ -1,7 +1,7 @@
 import { router } from 'expo-router';
 import React, { useMemo } from 'react';
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { KELLY_CAVEAT, agreementAdjust, binNForP, fmtMoney, fmtPct, kelly, recommendKelly } from '../model/kelly';
+import { KELLY_CAVEAT, agreementAdjust, binNForP, fmtMoney, fmtPct, kelly, parseOddsInput, recommendKelly } from '../model/kelly';
 import { usePrediction, type KellySide } from '../state/PredictionContext';
 import { C, S } from '../theme';
 
@@ -14,7 +14,9 @@ export default function KellyScreen() {
   }, [result, kellySide]);
 
   const sideName = result ? (kellySide === 'blue' ? result.blue : result.red) : null;
-  const odds = parseFloat(oddsText.replace(',', '.'));
+  // Odds field accepts decimal (1.85) OR American (-122 / +183) — auto-detected.
+  const parsedOdds = parseOddsInput(oddsText);
+  const odds = parsedOdds ? parsedOdds.decimal : NaN;
   const bankroll = parseFloat(bankrollText.replace(',', '.'));
   const k = p !== null ? kelly(odds, p) : null;
   const hasBankroll = Number.isFinite(bankroll) && bankroll > 0;
@@ -42,7 +44,7 @@ export default function KellyScreen() {
       <ScrollView contentContainerStyle={S.scroll} keyboardShouldPersistTaps="handled">
         <Text style={S.h1}>Kelly sizing</Text>
         <Text style={[S.dim, { marginBottom: 12 }]}>
-          Enter the book's decimal odds — the app sizes the stake from the model's calibrated probability.
+          Enter the book's odds as decimal (1.85) or American (-122 / +183) — the app sizes the stake from the model's calibrated probability.
         </Text>
 
         {!result ? (
@@ -78,15 +80,24 @@ export default function KellyScreen() {
                   );
                 })}
               </View>
-              <Text style={S.label}>Decimal odds (your book)</Text>
+              <Text style={S.label}>Odds (your book) — decimal or American</Text>
               <TextInput
-                style={[S.input, { marginBottom: 12 }]}
-                placeholder="e.g. 1.85"
+                style={[S.input, { marginBottom: 4 }]}
+                placeholder="e.g. 1.85 or -122"
                 placeholderTextColor={C.faint}
-                keyboardType="decimal-pad"
+                keyboardType="numbers-and-punctuation"
+                autoCapitalize="none"
+                autoCorrect={false}
                 value={oddsText}
                 onChangeText={setOddsText}
               />
+              {parsedOdds && (
+                <Text style={[S.faint, { marginBottom: 12 }]}>
+                  {parsedOdds.format === 'american'
+                    ? `≈ ${parsedOdds.decimal.toFixed(2)} decimal`
+                    : `≈ ${parsedOdds.american > 0 ? '+' : ''}${parsedOdds.american} American`}
+                </Text>
+              )}
               <Text style={S.label}>Bankroll (optional)</Text>
               <TextInput
                 style={S.input}
@@ -107,7 +118,7 @@ export default function KellyScreen() {
                       <Text style={[styles.edge, { color: C.green }]}>+{fmtPct(k.edge)}</Text>
                     </View>
                     <Text style={[S.dim, { marginBottom: 12 }]}>
-                      Model {fmtPct(k.p, 1)} vs implied {fmtPct(k.implied, 1)} on {sideName} @ {k.odds.toFixed(2)}
+                      Model {fmtPct(k.p, 1)} vs implied {fmtPct(k.implied, 1)} on {sideName} @ {k.odds.toFixed(2)} ({parsedOdds && parsedOdds.american > 0 ? '+' : ''}{parsedOdds?.american})
                     </Text>
                     <KellyRow label="Full Kelly" frac={1} fStar={k.fStar} amount={stake(1)} highlight={finalFrac === 1} recommended={finalFrac === 1} />
                     <KellyRow label="Half Kelly" frac={0.5} fStar={k.fStar} amount={stake(0.5)} highlight={finalFrac === 0.5} recommended={finalFrac === 0.5} />
@@ -138,7 +149,7 @@ export default function KellyScreen() {
               </View>
             ) : (
               <View style={S.card}>
-                <Text style={S.dim}>Enter valid decimal odds above 1.00 to compute Kelly stakes.</Text>
+                <Text style={S.dim}>Enter valid odds above 1.00 (decimal) or ±100+ (American) to compute Kelly stakes.</Text>
               </View>
             )}
 
