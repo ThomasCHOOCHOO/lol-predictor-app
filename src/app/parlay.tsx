@@ -168,7 +168,7 @@ export default function ParlayScreen() {
       <ScrollView contentContainerStyle={S.scroll} keyboardShouldPersistTaps="handled">
         <Text style={S.h1}>Parlay builder</Text>
         <Text style={[S.dim, { marginBottom: 12 }]}>
-          Ranked by expected value per $1 staked, net of the books' compounded holds
+          Ranked by expected value per $1 staked, net of the books&apos; compounded holds
           (EV = P × D − 1). A parlay is one ticket at one book, so combos only mix legs
           from the same book. Cross-match legs are treated as independent.
         </Text>

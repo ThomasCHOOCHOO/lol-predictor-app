@@ -17,7 +17,7 @@ function fmtTime(iso: string): string {
 }
 
 export default function OddsScreen() {
-  const { setResult, setKellySide, setOddsText, setPinBlue, setPinRed, oddsEvents: events, setOddsEvents: setEvents } = usePrediction();
+  const { setResult, setKellySide, setOddsText, setPinBlue, setPinRed, setProbMode, oddsEvents: events, setOddsEvents: setEvents } = usePrediction();
   const [keyReady, setKeyReady] = useState<boolean | null>(null); // null = checking
   const [keyInput, setKeyInput] = useState('');
   const [remaining, setRemaining] = useState<number | null>(null);
@@ -97,6 +97,8 @@ export default function OddsScreen() {
       if (!homeModel || !awayModel) return;
       const result = predictMatchup(homeModel, awayModel, null, { eloField: 'elo' });
       setResult(result);
+      // Odds-tab Match markets are series bets, so Kelly uses the series prob.
+      setProbMode('series');
       // Pinnacle's prices for the tapped side feed the smart-money agreement check.
       const pin = e.bookmakers.find((b) => b.key === 'pinnacle');
       setPinBlue(pin && pin.home !== null ? pin.home : null);
@@ -105,7 +107,7 @@ export default function OddsScreen() {
       setOddsText(price.toFixed(2));
       router.push('/kelly');
     },
-    [setResult, setKellySide, setOddsText, setPinBlue, setPinRed],
+    [setResult, setKellySide, setOddsText, setPinBlue, setPinRed, setProbMode],
   );
 
   if (keyReady === null) {
@@ -140,7 +142,7 @@ export default function OddsScreen() {
           ) : (
             <>
               <Text style={[S.dim, { marginBottom: 8 }]}>
-                Free signup at the-odds-api.com — paste your key below. It's stored in the
+                Free signup at the-odds-api.com — paste your key below. It&apos;s stored in the
                 device keychain, never uploaded anywhere.
               </Text>
               <TextInput
@@ -205,7 +207,7 @@ export default function OddsScreen() {
             {!loading && events.length === 0 && !error && (
               <View style={S.card}>
                 <Text style={S.body}>No odds fetched yet.</Text>
-                <Text style={S.dim}>Hit "Refresh odds" to pull the latest prices.</Text>
+                <Text style={S.dim}>Hit &quot;Refresh odds&quot; to pull the latest prices.</Text>
               </View>
             )}
 
@@ -357,7 +359,7 @@ function MatchCard({
       )}
       {!kellyOk && (
         <Text style={[S.dim, { marginTop: 8, color: C.amber }]}>
-          ⚠️ {!homeMapped ? e.homeTeam : e.awayTeam} isn't in the model — odds shown only,
+          ⚠️ {!homeMapped ? e.homeTeam : e.awayTeam} isn&apos;t in the model — odds shown only,
           Kelly handoff disabled.
         </Text>
       )}

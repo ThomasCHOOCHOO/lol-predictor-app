@@ -13,7 +13,7 @@ import {
   rosterTurnoverNote,
   searchTeams,
 } from '../model/artifacts';
-import { honestyNote, predictMatchup } from '../model/predict';
+import { honestyNote, predictMatchup, seriesConversion } from '../model/predict';
 import type { PredictionResult } from '../model/types';
 import { usePrediction } from '../state/PredictionContext';
 import { C, S } from '../theme';
@@ -96,7 +96,7 @@ function ProbBar({ pBlue, blue, red }: { pBlue: number; blue: string; red: strin
 }
 
 export default function PredictScreen() {
-  const { setResult, setKellySide } = usePrediction();
+  const { setResult, setKellySide, probMode, setProbMode, bestOf, setBestOf } = usePrediction();
   const [mode, setMode] = useState<Mode>('draft');
   const [patch, setPatch] = useState<string>(CURRENT_PATCH);
   const [blue, setBlue] = useState<string | null>('T1');
@@ -145,6 +145,15 @@ export default function PredictScreen() {
     setLocalResult(null); setResult(null);
   };
 
+  // Series display (pre-draft only): convert via the side-averaged per-map
+  // prob, since sides alternate in a real series. Draft stays per-map.
+  const showSeries = result?.mode === 'predraft' && probMode === 'series';
+  const conv = useMemo(
+    () => (result && showSeries ? seriesConversion(result.blue, result.red, bestOf) : null),
+    [result, showSeries, bestOf],
+  );
+  const displayP = conv ? conv.pSeries : (result?.pBlue ?? 0);
+
   return (
     <SafeAreaView style={S.screen}>
       <ScrollView contentContainerStyle={S.scroll} keyboardShouldPersistTaps="handled">
@@ -192,6 +201,39 @@ export default function PredictScreen() {
         </View>
         <TeamSelector side="red" team={red} onSelect={(t) => { setRed(t); setLocalResult(null); }} />
 
+        {/* per-map vs series (pre-draft only) */}
+        {mode === 'predraft' && (
+          <View style={{ marginBottom: 12 }}>
+            <Text style={S.label}>Probability</Text>
+            <View style={styles.segment}>
+              {(['map', 'series'] as const).map((m) => (
+                <Pressable
+                  key={m}
+                  style={[styles.segBtn, probMode === m && styles.segActive]}
+                  onPress={() => setProbMode(m)}
+                >
+                  <Text style={[styles.segText, probMode === m && styles.segTextActive]}>
+                    {m === 'map' ? 'Per-map' : 'Series'}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            {probMode === 'series' && (
+              <View style={[S.row, { gap: 8, marginTop: 8 }]}>
+                <Text style={[S.dim, { alignSelf: 'center' }]}>Best of</Text>
+                {([1, 3, 5] as const).map((n) => (
+                  <Pressable key={n} style={[S.chip, bestOf === n && S.chipActive]} onPress={() => setBestOf(n)}>
+                    <Text style={[S.chipText, bestOf === n && S.chipTextActive]}>Bo{n}</Text>
+                  </Pressable>
+                ))}
+                <Text style={[S.faint, { alignSelf: 'center', flex: 1 }]}>
+                  Series prob from the side-averaged per-map prob.
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+
         {mode === 'draft' && (
           <>
             <DraftEditor side="blue" team={blue} picks={bluePicks} bans={blueBans} patch={patch}
@@ -214,12 +256,21 @@ export default function PredictScreen() {
             <View style={[S.row, { justifyContent: 'space-between', marginBottom: 10 }]}>
               <Text style={S.h2}>Prediction</Text>
               <Text style={S.faint}>
-                {result.mode === 'draft' ? `draft · patch ${result.patch}` : 'pre-draft'}
+                {result.mode === 'draft'
+                  ? `draft · patch ${result.patch}`
+                  : conv
+                    ? `pre-draft · Bo${bestOf} series`
+                    : 'pre-draft · per-map'}
               </Text>
             </View>
-            <ProbBar pBlue={result.pBlue} blue={result.blue} red={result.red} />
+            <ProbBar pBlue={displayP} blue={result.blue} red={result.red} />
+            {conv && (
+              <Text style={[S.dim, { marginTop: 8 }]}>
+                Neutral per-map {(conv.pNeutral * 100).toFixed(0)}% (as blue {(conv.pMapAsBlue * 100).toFixed(0)}% / as red {(conv.pMapAsRed * 100).toFixed(0)}%) — sides alternate in a series.
+              </Text>
+            )}
             <View style={styles.noteBox}>
-              <Text style={styles.noteText}>📐 {honestyNote(result.pBlue, CALIBRATION_TABLE)}</Text>
+              <Text style={styles.noteText}>📐 {honestyNote(conv ? conv.pNeutral : result.pBlue, CALIBRATION_TABLE)}</Text>
             </View>
             <View style={{ marginTop: 10 }}>
               <Text style={S.label}>Feature contributions (blue − red)</Text>

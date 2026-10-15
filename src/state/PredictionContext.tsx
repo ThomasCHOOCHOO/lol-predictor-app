@@ -3,6 +3,7 @@ import type { OddsEvent } from '../model/odds';
 import type { PredictionResult } from '../model/types';
 
 export type KellySide = 'blue' | 'red';
+export type ProbMode = 'map' | 'series';
 
 interface PredictionState {
   result: PredictionResult | null;
@@ -10,6 +11,12 @@ interface PredictionState {
   /** Side the Kelly tab is sizing a bet for. Defaults to the model's favorite. */
   kellySide: KellySide;
   setKellySide: (s: KellySide) => void;
+  /** Per-map vs series probability mode (pre-draft Predict + Kelly). */
+  probMode: ProbMode;
+  setProbMode: (m: ProbMode) => void;
+  /** Best-of for series mode (1, 3, or 5). */
+  bestOf: number;
+  setBestOf: (n: number) => void;
   oddsText: string;
   setOddsText: (s: string) => void;
   bankrollText: string;
@@ -29,6 +36,8 @@ const Ctx = createContext<PredictionState | null>(null);
 export function PredictionProvider({ children }: { children: ReactNode }) {
   const [result, setResultState] = useState<PredictionResult | null>(null);
   const [kellySide, setKellySide] = useState<KellySide>('blue');
+  const [probMode, setProbMode] = useState<ProbMode>('map');
+  const [bestOf, setBestOf] = useState<number>(5);
   const [oddsText, setOddsText] = useState('');
   const [bankrollText, setBankrollText] = useState('');
   const [pinBlue, setPinBlue] = useState<number | null>(null);
@@ -44,7 +53,7 @@ export function PredictionProvider({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ result, setResult, kellySide, setKellySide, oddsText, setOddsText, bankrollText, setBankrollText, pinBlue, setPinBlue, pinRed, setPinRed, oddsEvents, setOddsEvents }}
+      value={{ result, setResult, kellySide, setKellySide, probMode, setProbMode, bestOf, setBestOf, oddsText, setOddsText, bankrollText, setBankrollText, pinBlue, setPinBlue, pinRed, setPinRed, oddsEvents, setOddsEvents }}
     >
       {children}
     </Ctx.Provider>

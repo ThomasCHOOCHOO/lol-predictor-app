@@ -146,4 +146,56 @@ export function honestyNote(p: number, table: CalibrationBin[]): string {
   return `when the model said ${lo}–${hi}%, that side won ${obs}% of ${bin.n.toLocaleString()} holdout games`;
 }
 
+function binom(n: number, k: number): number {
+  if (k < 0 || k > n) return 0;
+  let r = 1;
+  for (let i = 0; i < k; i++) r = (r * (n - i)) / (i + 1);
+  return r;
+}
+
+/**
+ * P(a team wins a best-of-N series) from its per-map win prob p.
+ * Assumes independent maps with fixed p (same as Python series_prob).
+ * bestOf <= 1 (or non-integer) returns p unchanged.
+ */
+export function seriesProb(p: number, bestOf: number): number {
+  if (!Number.isFinite(p)) return p;
+  if (!Number.isInteger(bestOf) || bestOf <= 1) return p;
+  const need = Math.floor(bestOf / 2) + 1;
+  let s = 0;
+  for (let k = need; k <= bestOf; k++) {
+    s += binom(bestOf, k) * Math.pow(p, k) * Math.pow(1 - p, bestOf - k);
+  }
+  return Math.min(Math.max(s, 0), 1);
+}
+
+export interface SeriesConversion {
+  /** P(first team wins one map as blue). */
+  pMapAsBlue: number;
+  /** P(first team wins one map as red). */
+  pMapAsRed: number;
+  /** Side-averaged per-map prob (sides alternate in a real series). */
+  pNeutral: number;
+  /** P(first team wins the best-of-N series) from the neutral per-map prob. */
+  pSeries: number;
+}
+
+/**
+ * Pre-draft series conversion for a matchup (first vs second).
+ *
+ * A real series doesn't let one team stay on blue every map — sides
+ * alternate (loser picks) — so the series prob is built from the
+ * side-averaged per-map prob, NOT from one orientation's per-map prob.
+ * E.g. KC vs C9: 70% as blue / 60% as red -> neutral 65% -> Bo5 76%,
+ * not the 84% a naive binomial on 70% would give.
+ *
+ * Only valid pre-draft (draft=null); draft mode stays per-map.
+ */
+export function seriesConversion(first: string, second: string, bestOf: number): SeriesConversion {
+  const asBlue = predictMatchup(first, second, null, {}).pBlue;
+  const asRed = 1 - predictMatchup(second, first, null, {}).pBlue;
+  const neutral = (asBlue + asRed) / 2;
+  return { pMapAsBlue: asBlue, pMapAsRed: asRed, pNeutral: neutral, pSeries: seriesProb(neutral, bestOf) };
+}
+
 export { COMFORT };
