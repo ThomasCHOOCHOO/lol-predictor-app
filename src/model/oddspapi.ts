@@ -30,8 +30,8 @@ const LOL_SPORT_ID = 18;
 const FIXTURE_WINDOW_DAYS = 3;
 const MAX_ODDS_CALLS = 12;
 
-/** Display titles: the odds payload carries slugs, not names. */
-const BOOK_TITLES: Record<string, string> = {
+/** Display titles: the odds payload carries slugs, not names. Exported for the book picker. */
+export const BOOK_TITLES: Record<string, string> = {
   pinnacle: 'Pinnacle',
   bet365: 'Bet365',
   betway: 'Betway',

@@ -1,5 +1,6 @@
 import React from 'react';
 import { SafeAreaView, ScrollView, Text, View } from 'react-native';
+import MonteCarloSim from '../components/MonteCarloSim';
 import {
   BACKTESTS,
   CALIBRATION_NOTE,
@@ -60,11 +61,14 @@ export default function InfoScreen() {
           </Text>
         </View>
 
+        <MonteCarloSim />
+
         <View style={S.card}>
-          <Text style={S.h2}>Coming later</Text>
+          <Text style={S.h2}>Odds feeds</Text>
           <Text style={S.dim}>
-            Live sportsbook odds integration (The Odds API / PandaScore) to auto-fill the Kelly tab — parked for now.
-            Kelly uses manually entered decimal odds.
+            The Odds tab pulls live moneylines from The Odds API + OddsPapi (merged view) — tap any
+            price to size it in Kelly. The Kelly tab also accepts manual odds. Every OddsPapi pull is
+            saved, and the tab ranks books by average margin and tracks cross-book arb pairs.
           </Text>
         </View>
       </ScrollView>

@@ -1,11 +1,23 @@
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { ARB_CAVEAT, OddsEvent, bestPrices, clearOddsApiKey, detectArb, fetchOdds, getMyBooks, getOddsApiKey, mapOddsTeamName, mergeOddsEvents, setMyBooks, setOddsApiKey, splitStake } from '../model/odds';
-import { clearOddsPapiKey, fetchOddsPapi, getOddsPapiKey, setOddsPapiKey } from '../model/oddspapi';
+import { ARB_CAVEAT, BookmakerOdds, OddsEvent, bestPrices, clearOddsApiKey, detectArb, fetchOdds, getMyBooks, getOddsApiKey, mapOddsTeamName, mergeOddsEvents, setMyBooks, setOddsApiKey, splitStake } from '../model/odds';
+import { clearOddsPapiKey, BOOK_TITLES, fetchOddsPapi, getOddsPapiKey, setOddsPapiKey } from '../model/oddspapi';
+import {
+  OddsSnapshot,
+  appendOddsSnapshots,
+  buildSnapshots,
+  clearOddsHistory,
+  computeArbPairs,
+  computeBookStats,
+  loadOddsHistory,
+} from '../model/oddsHistory';
 import { predictMatchup } from '../model/predict';
 import { usePrediction } from '../state/PredictionContext';
 import { C, S } from '../theme';
+
+/** The user's five books. New installs default to these instead of every fetched book. */
+const DEFAULT_MY_BOOKS = ['pinnacle', 'bet365', 'betway', 'betrivers', 'draftkings'];
 
 function fmtTime(iso: string): string {
   if (!iso) return '';
@@ -24,8 +36,10 @@ export default function OddsScreen() {
   const [remaining, setRemaining] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [myBooks, setMyBooksState] = useState<string[] | null>(null); // null = all
+  const [myBooks, setMyBooksState] = useState<string[] | null>(null); // null = not loaded yet
   const [allBooks, setAllBooks] = useState<{ key: string; title: string }[]>([]);
+  const [bookSearch, setBookSearch] = useState('');
+  const [history, setHistory] = useState<OddsSnapshot[]>([]);
   const [source, setSource] = useState<'oddsapi' | 'oddspapi' | 'both'>('both');
   const [papiKeyReady, setPapiKeyReady] = useState<boolean | null>(null); // null = checking
   const [papiKeyInput, setPapiKeyInput] = useState('');
@@ -34,10 +48,21 @@ export default function OddsScreen() {
 
   useEffect(() => {
     (async () => {
-      const [k, b, pk] = await Promise.all([getOddsApiKey(), getMyBooks(), getOddsPapiKey()]);
+      const [k, b, pk, h] = await Promise.all([
+        getOddsApiKey(),
+        getMyBooks(),
+        getOddsPapiKey(),
+        loadOddsHistory(),
+      ]);
       setKeyReady(!!k);
-      setMyBooksState(b);
+      if (b === null) {
+        setMyBooksState(DEFAULT_MY_BOOKS);
+        await setMyBooks(DEFAULT_MY_BOOKS);
+      } else {
+        setMyBooksState(b);
+      }
       setPapiKeyReady(!!pk);
+      setHistory(h);
     })();
   }, []);
 
@@ -83,6 +108,7 @@ export default function OddsScreen() {
       const [oddsKey, papiKey] = await Promise.all([getOddsApiKey(), getOddsPapiKey()]);
       const lists: OddsEvent[][] = [];
       const problems: string[] = [];
+      let papiEvents: OddsEvent[] | null = null;
       if (wantOddsApi) {
         if (!oddsKey) {
           setKeyReady(false);
@@ -105,6 +131,7 @@ export default function OddsScreen() {
           try {
             const { events: evts, requestsUsed } = await fetchOddsPapi(papiKey);
             lists.push(evts);
+            papiEvents = evts;
             setPapiUsed(requestsUsed);
           } catch (e: any) {
             problems.push(`OddsPapi: ${e?.message ?? 'fetch failed.'}`);
@@ -122,6 +149,15 @@ export default function OddsScreen() {
       const seen = new Map<string, string>();
       for (const e of merged) for (const b of e.bookmakers) seen.set(b.key, b.title);
       setAllBooks([...seen.entries()].map(([key, title]) => ({ key, title })));
+      // Persist this OddsPapi pull: your books' prices + best legs per match.
+      if (papiEvents) {
+        const savedBooks = await getMyBooks();
+        const snaps = buildSnapshots(papiEvents, new Set(savedBooks ?? DEFAULT_MY_BOOKS));
+        if (snaps.length > 0) {
+          const h = await appendOddsSnapshots(snaps);
+          setHistory(h);
+        }
+      }
     } catch (e: any) {
       setError(e?.message ?? 'Failed to fetch odds.');
     } finally {
@@ -131,20 +167,51 @@ export default function OddsScreen() {
 
   const toggleBook = useCallback(
     async (key: string) => {
-      const current = myBooks ?? allBooks.map((b) => b.key);
+      const current = myBooks ?? DEFAULT_MY_BOOKS;
       const next = current.includes(key) ? current.filter((k) => k !== key) : [...current, key];
       setMyBooksState(next);
       await setMyBooks(next);
     },
-    [myBooks, allBooks],
+    [myBooks],
   );
 
   const resetBooks = useCallback(async () => {
-    setMyBooksState(null);
-    await setMyBooks(allBooks.map((b) => b.key));
+    setMyBooksState(DEFAULT_MY_BOOKS);
+    await setMyBooks(DEFAULT_MY_BOOKS);
+  }, []);
+
+  const activeBooks = useMemo(() => new Set(myBooks ?? DEFAULT_MY_BOOKS), [myBooks]);
+
+  const pinnedOrder = useMemo(() => myBooks ?? DEFAULT_MY_BOOKS, [myBooks]);
+
+  const titleMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [k, t] of Object.entries(BOOK_TITLES)) map.set(k, t);
+    for (const b of allBooks) map.set(b.key, b.title);
+    return map;
   }, [allBooks]);
 
-  const activeBooks = useMemo(() => new Set(myBooks ?? allBooks.map((b) => b.key)), [myBooks, allBooks]);
+  const bookCandidates = useMemo(() => {
+    const q = bookSearch.trim().toLowerCase();
+    if (!q) return [];
+    const selected = new Set(myBooks ?? DEFAULT_MY_BOOKS);
+    return [...titleMap.entries()]
+      .filter(([key, title]) => !selected.has(key) && (title.toLowerCase().includes(q) || key.includes(q)))
+      .slice(0, 6)
+      .map(([key, title]) => ({ key, title }));
+  }, [bookSearch, myBooks, titleMap]);
+
+  const bookStats = useMemo(() => computeBookStats(history), [history]);
+
+  const arbPairs = useMemo(
+    () => computeArbPairs(history).filter((p) => p.arbCount > 0).slice(0, 5),
+    [history],
+  );
+
+  const clearHistory = useCallback(async () => {
+    await clearOddsHistory();
+    setHistory([]);
+  }, []);
 
   const toKelly = useCallback(
     (e: OddsEvent, side: 'home' | 'away', price: number) => {
@@ -304,28 +371,92 @@ export default function OddsScreen() {
               </Text>
             )}
 
-            {allBooks.length > 0 && (
+            <View style={S.card}>
+              <View style={[S.row, { justifyContent: 'space-between', marginBottom: 8 }]}>
+                <Text style={S.label}>Pinned books</Text>
+                <Pressable onPress={() => void resetBooks()}>
+                  <Text style={[S.dim, { textDecorationLine: 'underline' }]}>Reset to my 5</Text>
+                </Pressable>
+              </View>
+              <View style={styles.chips}>
+                {(myBooks ?? DEFAULT_MY_BOOKS).map((key) => (
+                  <Pressable
+                    key={key}
+                    style={[S.chip, { backgroundColor: C.blue, borderColor: C.blue }]}
+                    onPress={() => void toggleBook(key)}
+                  >
+                    <Text style={[S.chipText, { color: '#06121F' }]}>{titleMap.get(key) ?? key} ×</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <TextInput
+                style={[S.input, { marginTop: 10 }]}
+                placeholder="Pin a book — search by name"
+                placeholderTextColor={C.faint}
+                autoCapitalize="none"
+                autoCorrect={false}
+                value={bookSearch}
+                onChangeText={setBookSearch}
+              />
+              {bookCandidates.length > 0 && (
+                <View style={[styles.chips, { marginTop: 8 }]}>
+                  {bookCandidates.map((b) => (
+                    <Pressable
+                      key={b.key}
+                      style={S.chip}
+                      onPress={() => {
+                        void toggleBook(b.key);
+                        setBookSearch('');
+                      }}
+                    >
+                      <Text style={S.chipText}>+ {b.title}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+              <Text style={[S.faint, { marginTop: 8 }]}>
+                Your pinned books sit at the top of every match card, above all other books. Tap a
+                pinned book to unpin it.
+              </Text>
+            </View>
+
+            {history.length > 0 && (
               <View style={S.card}>
                 <View style={[S.row, { justifyContent: 'space-between', marginBottom: 8 }]}>
-                  <Text style={S.label}>My books</Text>
-                  <Pressable onPress={() => void resetBooks()}>
-                    <Text style={[S.dim, { textDecorationLine: 'underline' }]}>Select all</Text>
+                  <Text style={S.label}>Saved pulls</Text>
+                  <Pressable onPress={() => void clearHistory()}>
+                    <Text style={[S.dim, { textDecorationLine: 'underline' }]}>Clear history</Text>
                   </Pressable>
                 </View>
-                <View style={styles.chips}>
-                  {allBooks.map((b) => {
-                    const on = activeBooks.has(b.key);
-                    return (
-                      <Pressable
-                        key={b.key}
-                        style={[S.chip, on && { backgroundColor: C.blue, borderColor: C.blue }]}
-                        onPress={() => void toggleBook(b.key)}
-                      >
-                        <Text style={[S.chipText, on && { color: '#06121F' }]}>{b.title}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
+                <Text style={[S.dim, { marginBottom: 8 }]}>
+                  {history.length} OddsPapi snapshots saved. Lowest margin = tightest spread.
+                </Text>
+                {bookStats.slice(0, 8).map((s) => (
+                  <View key={s.key} style={[S.row, { justifyContent: 'space-between', paddingVertical: 3 }]}>
+                    <Text style={S.body}>{s.title}</Text>
+                    <Text style={S.dim}>
+                      avg margin {(s.avgMargin * 100).toFixed(1)}% · n={s.n}
+                    </Text>
+                  </View>
+                ))}
+                <Text style={[S.label, { marginTop: 12 }]}>Top arb pairs</Text>
+                {arbPairs.length === 0 ? (
+                  <Text style={S.dim}>No cross-book arbs in saved pulls yet.</Text>
+                ) : (
+                  arbPairs.map((p) => (
+                    <View
+                      key={`${p.bookA}|${p.bookB}`}
+                      style={[S.row, { justifyContent: 'space-between', paddingVertical: 3 }]}
+                    >
+                      <Text style={S.body}>
+                        {p.titleA} × {p.titleB}
+                      </Text>
+                      <Text style={S.dim}>
+                        {p.arbCount} arbs · best +{(p.bestArbPct * 100).toFixed(1)}%
+                      </Text>
+                    </View>
+                  ))
+                )}
               </View>
             )}
 
@@ -340,7 +471,8 @@ export default function OddsScreen() {
               <MatchCard
                 key={e.id}
                 event={e}
-                activeBooks={activeBooks}
+                pinnedBooks={activeBooks}
+                pinnedOrder={pinnedOrder}
                 showSource={source === 'both'}
                 onPick={(side, price) => toKelly(e, side, price)}
               />
@@ -354,24 +486,31 @@ export default function OddsScreen() {
 
 function MatchCard({
   event: e,
-  activeBooks,
+  pinnedBooks,
+  pinnedOrder,
   showSource,
   onPick,
 }: {
   event: OddsEvent;
-  activeBooks: Set<string>;
+  pinnedBooks: Set<string>;
+  pinnedOrder: string[];
   showSource: boolean;
   onPick: (side: 'home' | 'away', price: number) => void;
 }) {
-  const books = e.bookmakers.filter((b) => activeBooks.has(b.key));
+  // Every book shows. Pinned books (yours) sit on top, in your order; the
+  // rest follow in feed order. Best-price + arb math run over ALL books.
+  const pinned = pinnedOrder
+    .map((key) => e.bookmakers.find((b) => b.key === key))
+    .filter((b): b is BookmakerOdds => b !== undefined);
+  const rest = e.bookmakers.filter((b) => !pinnedBooks.has(b.key));
   const homeMapped = mapOddsTeamName(e.homeTeam);
   const awayMapped = mapOddsTeamName(e.awayTeam);
   const kellyOk = !!homeMapped && !!awayMapped;
   const [showArb, setShowArb] = useState(false);
   const [stakeText, setStakeText] = useState('100');
 
-  const { home: bestHomeLeg, away: bestAwayLeg } = useMemo(() => bestPrices(books), [books]);
-  const arb = useMemo(() => detectArb(books), [books]);
+  const { home: bestHomeLeg, away: bestAwayLeg } = useMemo(() => bestPrices(e.bookmakers), [e.bookmakers]);
+  const arb = useMemo(() => detectArb(e.bookmakers), [e.bookmakers]);
   const bestHome = bestHomeLeg?.price ?? 0;
   const bestAway = bestAwayLeg?.price ?? 0;
   const total = parseFloat(stakeText.replace(',', '.'));
@@ -379,6 +518,27 @@ function MatchCard({
     arb && Number.isFinite(total) && total > 0
       ? splitStake(total, arb.home.price, arb.away.price)
       : null;
+
+  const renderRow = (b: BookmakerOdds, pinnedRow: boolean) => (
+    <View key={b.key} style={[styles.row, pinnedRow && styles.pinnedRow]}>
+      <Text style={[S.body, { flex: 1.4, fontSize: 13 }]} numberOfLines={1}>
+        {b.title}
+        {showSource && b.source ? ` · ${b.source === 'oddspapi' ? 'OddsPapi' : 'Odds API'}` : ''}
+      </Text>
+      <OddsCell
+        price={b.home}
+        best={b.home !== null && b.home >= bestHome && bestHome > 0}
+        enabled={kellyOk}
+        onPress={() => b.home !== null && onPick('home', b.home)}
+      />
+      <OddsCell
+        price={b.away}
+        best={b.away !== null && b.away >= bestAway && bestAway > 0}
+        enabled={kellyOk}
+        onPress={() => b.away !== null && onPick('away', b.away)}
+      />
+    </View>
+  );
 
   return (
     <View style={S.card}>
@@ -395,8 +555,8 @@ function MatchCard({
           </Pressable>
         )}
       </View>
-      {books.length === 0 ? (
-        <Text style={S.dim}>No odds posted yet for your selected books.</Text>
+      {e.bookmakers.length === 0 ? (
+        <Text style={S.dim}>No odds posted yet for this match.</Text>
       ) : (
         <>
           <View style={styles.head}>
@@ -404,26 +564,11 @@ function MatchCard({
             <Text style={styles.headCell}>{e.homeTeam}</Text>
             <Text style={styles.headCell}>{e.awayTeam}</Text>
           </View>
-          {books.map((b) => (
-            <View key={b.key} style={styles.row}>
-              <Text style={[S.body, { flex: 1.4, fontSize: 13 }]} numberOfLines={1}>
-                {b.title}
-                {showSource && b.source ? ` · ${b.source === 'oddspapi' ? 'OddsPapi' : 'Odds API'}` : ''}
-              </Text>
-              <OddsCell
-                price={b.home}
-                best={b.home !== null && b.home >= bestHome && bestHome > 0}
-                enabled={kellyOk}
-                onPress={() => b.home !== null && onPick('home', b.home)}
-              />
-              <OddsCell
-                price={b.away}
-                best={b.away !== null && b.away >= bestAway && bestAway > 0}
-                enabled={kellyOk}
-                onPress={() => b.away !== null && onPick('away', b.away)}
-              />
-            </View>
-          ))}
+          {pinned.map((b) => renderRow(b, true))}
+          {pinned.length > 0 && rest.length > 0 && (
+            <Text style={[S.faint, { marginTop: 10, marginBottom: 2 }]}>All books ({rest.length})</Text>
+          )}
+          {rest.map((b) => renderRow(b, false))}
           <Text style={[S.faint, { marginTop: 8 }]}>
             Green = best price for that side. Tap a price to size it in Kelly.
           </Text>
@@ -530,6 +675,11 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#26304A',
+  },
+  pinnedRow: {
+    borderLeftWidth: 3,
+    borderLeftColor: '#4DA3FF',
+    paddingLeft: 8,
   },
   cell: {
     flex: 1,
