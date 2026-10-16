@@ -225,6 +225,17 @@ def main() -> int:
             crop_region(img, box).save(out_dir / f"crop_{name}.jpg")
         print("saved %s (full frame + %d crops) -- open them to check the boxes" % (out_dir, len(crops)))
         print("if a box is off, copy ocr/crops.example.json to crops.json, adjust, and rerun with --crops")
+        # Also print what OCR reads, so a headless VM can verify without
+        # opening the images: each value must match the visible scoreboard.
+        from scoreboard import parse_frame as _parse
+
+        parsed = _parse(str(frame), crops)
+        print("OCR read: %.1f min  L %s/%s  R %s/%s" % (
+            parsed["game_time_min"] if parsed["game_time_min"] is not None else -1,
+            parsed["left"]["kills"], parsed["left"]["gold_k"],
+            parsed["right"]["kills"], parsed["right"]["gold_k"],
+        ))
+        print("raw OCR text:", json.dumps(parsed["raw_text"]))
         return 0
 
     if args.once:
