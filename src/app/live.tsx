@@ -71,11 +71,24 @@ export default function LiveScreen() {
   const [priorNote, setPriorNote] = useState<string | null>(null);
   const [feedDown, setFeedDown] = useState(false);
   const [ended, setEnded] = useState(false);
+  const [betweenGames, setBetweenGames] = useState(false);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Latest game/match for the poll interval (avoids stale closures when the
+  // game advances mid-series). pollRef always points at the freshest poll.
+  const gameIdRef = useRef<string | null>(null);
+  const matchRef = useRef<LiveMatch | null>(null);
+  const gameRef = useRef<LiveGame | null>(null);
+  const pollRef = useRef<(gameId: string | null, m: LiveMatch | null, g: LiveGame | null) => Promise<void>>(
+    async () => {},
+  );
 
-  // team assignment: feed blue/red side <-> model team (user can swap)
-  const blueTeam = swapped ? match?.redCode : match?.blueCode;
-  const redTeam = swapped ? match?.blueCode : match?.redCode;
+  // team assignment: feed blue/red side <-> model team (user can swap).
+  // Sides can flip between games in a series, so prefer the current game's
+  // sides and fall back to the match-level codes.
+  const gameBlue = game?.blueCode || match?.blueCode;
+  const gameRed = game?.redCode || match?.redCode;
+  const blueTeam = swapped ? gameRed : gameBlue;
+  const redTeam = swapped ? gameBlue : gameRed;
   const blueModel = blueTeam ? mapTeamCode(blueTeam) ?? blueTeam : null;
   const redModel = redTeam ? mapTeamCode(redTeam) ?? redTeam : null;
 
@@ -112,33 +125,75 @@ export default function LiveScreen() {
   useEffect(() => stopPoll, [stopPoll]);
 
   const poll = useCallback(
-    async (gameId: string) => {
+    async (gameId: string | null, m: LiveMatch | null, g: LiveGame | null) => {
+      if (!gameId || !m) return;
       const frames = await fetchWindow(gameId);
-      if (frames.length === 0) {
-        setFeedDown(true);
+      const last = frames[frames.length - 1];
+      const s = last && last.gameState === 'in_game' ? snapshot(frames) : null;
+      if (!s) {
+        // Current game over / not started / feed gap: re-discover the live
+        // game instead of stopping. The tab advances across games in a
+        // series on its own; it only stops when the match is over.
+        let next: LiveGame | null = null;
+        try {
+          next = await fetchLiveGame(m.matchId);
+        } catch {
+          next = null;
+        }
+        if (!next) {
+          setFeedDown(true);
+          return;
+        }
+        if (next.state === 'inProgress' && next.gameId !== gameId) {
+          setGame(next);
+          gameRef.current = next;
+          gameIdRef.current = next.gameId;
+          setSnap(null);
+          setLiveP(null);
+          setPreP(null);
+          setPriorNote(null);
+          setBetweenGames(false);
+          setEnded(false);
+          setFeedDown(false);
+          // No immediate re-poll here: the next interval tick uses the
+          // fresh poll closure (via pollRef) with the new game's sides.
+          return;
+        }
+        if (next.state === 'inProgress') {
+          setFeedDown(true); // same game, transient feed gap
+          return;
+        }
+        if (next.state === 'unstarted') {
+          setBetweenGames(true);
+          setFeedDown(false);
+          return;
+        }
+        setEnded(true);
+        stopPoll();
         return;
       }
       setFeedDown(false);
-      const last = frames[frames.length - 1];
-      if (last.gameState !== 'in_game') {
-        setEnded(true);
-        stopPoll();
-      }
-      const s = snapshot(frames);
+      setBetweenGames(false);
       setSnap(s);
-      if (s && blueModel && redModel) {
+      // Derive sides from the game being polled (not render closure) so a
+      // just-advanced game uses its own sides on the first tick.
+      const pollBlue = swapped ? g?.redCode || m.redCode : g?.blueCode || m.blueCode;
+      const pollRed = swapped ? g?.blueCode || m.blueCode : g?.redCode || m.redCode;
+      const pollBlueModel = pollBlue ? mapTeamCode(pollBlue) ?? pollBlue : null;
+      const pollRedModel = pollRed ? mapTeamCode(pollRed) ?? pollRed : null;
+      if (pollBlueModel && pollRedModel) {
         // Prior: prefer a draft-adjusted prediction for this exact matchup
         // (run on the Predict tab); fall back to the pre-draft model.
         let priorP: number;
         let note: string | null = null;
         const r = ctxResult;
-        const sameSides = r && r.blue === blueModel && r.red === redModel;
-        const flippedSides = r && r.blue === redModel && r.red === blueModel;
+        const sameSides = r && r.blue === pollBlueModel && r.red === pollRedModel;
+        const flippedSides = r && r.blue === pollRedModel && r.red === pollBlueModel;
         if (r && r.mode === 'draft' && (sameSides || flippedSides)) {
           priorP = sameSides ? r.pBlue : 1 - r.pBlue;
           note = 'using draft-adjusted prior';
         } else {
-          priorP = predictMatchup(blueModel, redModel, null, { eloField: 'elo' }).pBlue;
+          priorP = predictMatchup(pollBlueModel, pollRedModel, null, { eloField: 'elo' }).pBlue;
         }
         setPreP(priorP);
         setPriorNote(note);
@@ -154,13 +209,19 @@ export default function LiveScreen() {
         }
       }
     },
-    [blueModel, redModel, stopPoll, ctxResult],
+    [swapped, stopPoll, ctxResult],
   );
+
+  // Keep the interval pointed at the freshest poll closure.
+  useEffect(() => {
+    pollRef.current = poll;
+  });
 
   const selectMatch = useCallback(
     async (m: LiveMatch) => {
       stopPoll();
       setMatch(m);
+      matchRef.current = m;
       setSwapped(false);
       setSnap(null);
       setLiveP(null);
@@ -168,6 +229,7 @@ export default function LiveScreen() {
       setPriorNote(null);
       setEnded(false);
       setFeedDown(false);
+      setBetweenGames(false);
       setError(null);
       try {
         const g = await fetchLiveGame(m.matchId);
@@ -176,8 +238,13 @@ export default function LiveScreen() {
           return;
         }
         setGame(g);
-        await poll(g.gameId);
-        timer.current = setInterval(() => void poll(g.gameId), POLL_MS);
+        gameRef.current = g;
+        gameIdRef.current = g.gameId;
+        await poll(g.gameId, m, g);
+        timer.current = setInterval(
+          () => void pollRef.current(gameIdRef.current, matchRef.current, gameRef.current),
+          POLL_MS,
+        );
       } catch {
         setError('Could not load game details.');
       }
@@ -188,12 +255,16 @@ export default function LiveScreen() {
   const back = useCallback(() => {
     stopPoll();
     setMatch(null);
+    matchRef.current = null;
     setGame(null);
+    gameRef.current = null;
+    gameIdRef.current = null;
     setSnap(null);
     setLiveP(null);
     setPreP(null);
     setPriorNote(null);
     setEnded(false);
+    setBetweenGames(false);
   }, [stopPoll]);
 
   const shownP = liveP ?? preP;
@@ -269,7 +340,12 @@ export default function LiveScreen() {
                   <Text style={S.chipText}>Swap sides</Text>
                 </Pressable>
               </View>
-              {ended && <Text style={[S.body, { color: C.amber, marginTop: 8 }]}>Game ended.</Text>}
+              {betweenGames && (
+                <Text style={[S.body, { color: C.amber, marginTop: 8 }]}>
+                  Between games — waiting for the next game to start.
+                </Text>
+              )}
+              {ended && <Text style={[S.body, { color: C.amber, marginTop: 8 }]}>Match over.</Text>}
               {feedDown && (
                 <Text style={[S.body, { color: C.amber, marginTop: 8 }]}>
                   Live feed unavailable — showing pre-game probability.

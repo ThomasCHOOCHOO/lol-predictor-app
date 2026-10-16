@@ -105,16 +105,33 @@ export interface LiveGame {
   gameId: string;
   number: number;
   state: string;
+  /** Per-game side codes (sides can flip between games in a series). */
+  blueCode: string;
+  redCode: string;
 }
 
 /** Games of a match; returns the in-progress one (or first unstarted). */
 export async function fetchLiveGame(matchId: string): Promise<LiveGame | null> {
   const j = await gw(`getEventDetails?id=${encodeURIComponent(matchId)}`);
-  const games: any[] = j?.data?.event?.match?.games ?? [];
+  const match: any = j?.data?.event?.match ?? {};
+  const games: any[] = match?.games ?? [];
+  const teams: any[] = match?.teams ?? [];
+  const codeById = new Map<string, string>();
+  for (const t of teams) if (t?.id) codeById.set(String(t.id), String(t?.code ?? ''));
   const inProg = games.find((g) => g?.state === 'inProgress');
   const pick = inProg ?? games.find((g) => g?.state === 'unstarted') ?? games[0];
   if (!pick) return null;
-  return { gameId: String(pick.id), number: pick.number ?? 0, state: pick.state ?? '' };
+  const sideCode = (side: string) => {
+    const t = (pick?.teams ?? []).find((x: any) => x?.side === side);
+    return codeById.get(String(t?.id)) ?? '';
+  };
+  return {
+    gameId: String(pick.id),
+    number: pick.number ?? 0,
+    state: pick.state ?? '',
+    blueCode: sideCode('blue'),
+    redCode: sideCode('red'),
+  };
 }
 
 /* ------------------------- livestats frames ------------------------- */
