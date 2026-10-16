@@ -79,21 +79,28 @@ export default function LiveScreen() {
   const blueModel = blueTeam ? mapTeamCode(blueTeam) ?? blueTeam : null;
   const redModel = redTeam ? mapTeamCode(redTeam) ?? redTeam : null;
 
-  const loadMatches = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setMatches(await fetchLiveMatches());
-    } catch (e) {
-      setError('Could not reach the LoL Esports API.');
-    } finally {
-      setLoading(false);
-    }
+  // setState lives only inside the .then() callbacks below, which the
+  // set-state-in-effect rule permits (setState in a callback when external
+  // state changes). The effect only starts the fetch. Callers set
+  // loading/error synchronously before invoking (see the refresh button);
+  // on mount the initial state already has loading=true.
+  const refreshMatches = useCallback(() => {
+    fetchLiveMatches().then(
+      (data) => {
+        setMatches(data);
+        setError(null);
+        setLoading(false);
+      },
+      () => {
+        setError('Could not reach the LoL Esports API.');
+        setLoading(false);
+      },
+    );
   }, []);
 
   useEffect(() => {
-    loadMatches();
-  }, [loadMatches]);
+    void refreshMatches();
+  }, [refreshMatches]);
 
   const stopPoll = useCallback(() => {
     if (timer.current) {
@@ -209,7 +216,14 @@ export default function LiveScreen() {
 
         {!match && (
           <>
-            <Pressable style={[S.btn, { marginBottom: 12 }]} onPress={() => void loadMatches()}>
+            <Pressable
+              style={[S.btn, { marginBottom: 12 }]}
+              onPress={() => {
+                setError(null);
+                setLoading(true);
+                void refreshMatches();
+              }}
+            >
               <Text style={S.btnText}>{loading ? 'Checking…' : 'Refresh live matches'}</Text>
             </Pressable>
             {!loading && matches.length === 0 && !error && (

@@ -43,8 +43,8 @@ export default function InfoScreen() {
         <View style={S.card}>
           <Text style={S.h2}>Roster-aware team strength</Text>
           <Text style={S.dim}>
-            Rosters reset every year, so raw Elo would overrate rebuilt teams. Each team's rating blends its
-            prior-year Elo with the prior Elo of incoming players' old teams, regressed toward league average
+            Rosters reset every year, so raw Elo would overrate rebuilt teams. Each team&apos;s rating blends its
+            prior-year Elo with the prior Elo of incoming players&apos; old teams, regressed toward league average
             in proportion to starter turnover.
           </Text>
           <Text style={[S.faint, { marginTop: 8, fontFamily: 'monospace' }]}>{ROSTER_FORMULA}</Text>
