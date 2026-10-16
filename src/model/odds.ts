@@ -5,7 +5,7 @@ import * as SecureStore from 'expo-secure-store';
    key only ever lives on the user's own device). Native keeps the keychain. */
 const IS_WEB = Platform.OS === 'web';
 
-async function storeGet(key: string): Promise<string | null> {
+export async function storeGet(key: string): Promise<string | null> {
   if (IS_WEB) {
     try {
       return window.localStorage.getItem('lolpredictor:' + key);
@@ -16,7 +16,7 @@ async function storeGet(key: string): Promise<string | null> {
   return SecureStore.getItemAsync(key);
 }
 
-async function storeSet(key: string, value: string): Promise<void> {
+export async function storeSet(key: string, value: string): Promise<void> {
   if (IS_WEB) {
     try {
       window.localStorage.setItem('lolpredictor:' + key, value);
@@ -28,7 +28,7 @@ async function storeSet(key: string, value: string): Promise<void> {
   return SecureStore.setItemAsync(key, value);
 }
 
-async function storeDelete(key: string): Promise<void> {
+export async function storeDelete(key: string): Promise<void> {
   if (IS_WEB) {
     try {
       window.localStorage.removeItem('lolpredictor:' + key);
@@ -93,6 +93,8 @@ export interface BookmakerOdds {
   home: number | null; // decimal odds on home_team
   away: number | null; // decimal odds on away_team
   lastUpdate: string | null;
+  /** Which aggregator this row came from. Undefined = The Odds API (legacy rows). */
+  source?: 'oddsapi' | 'oddspapi';
 }
 
 export interface OddsEvent {
@@ -140,6 +142,7 @@ function parseBookmaker(b: any): BookmakerOdds | null {
     home,
     away,
     lastUpdate: typeof b.last_update === 'string' ? b.last_update : null,
+    source: 'oddsapi',
   };
 }
 
@@ -312,4 +315,46 @@ export function parseOddsResponse(j: any): OddsEvent[] {
   return (Array.isArray(j) ? j : [])
     .map(parseEvent)
     .filter((e): e is OddsEvent => e !== null);
+}
+
+/* ------------------------- multi-source merge ------------------------- */
+
+/**
+ * Merge two event lists (e.g. The Odds API + OddsPapi) into one.
+ * Events match when the team pair (order-insensitive) and the UTC date agree.
+ * When the same book appears from both sources, the fresher lastUpdate wins;
+ * on a tie or missing timestamps, OddsPapi wins (broader LoL coverage).
+ */
+export function mergeOddsEvents(a: OddsEvent[], b: OddsEvent[]): OddsEvent[] {
+  const keyOf = (e: OddsEvent): string => {
+    const teams = [e.homeTeam.trim().toLowerCase(), e.awayTeam.trim().toLowerCase()].sort();
+    const day = e.commenceTime.slice(0, 10);
+    return `${teams[0]}|${teams[1]}|${day}`;
+  };
+  const pickBook = (x: BookmakerOdds, y: BookmakerOdds): BookmakerOdds => {
+    const tx = x.lastUpdate ? Date.parse(x.lastUpdate) : NaN;
+    const ty = y.lastUpdate ? Date.parse(y.lastUpdate) : NaN;
+    if (Number.isFinite(ty) && (!Number.isFinite(tx) || ty >= tx)) return y;
+    if (Number.isFinite(tx) && !Number.isFinite(ty)) return x;
+    // Tie / both missing: OddsPapi wins.
+    return y.source === 'oddspapi' ? y : x.source === 'oddspapi' ? x : y;
+  };
+  const merged = new Map<string, OddsEvent>();
+  for (const e of [...a, ...b]) {
+    const k = keyOf(e);
+    const existing = merged.get(k);
+    if (!existing) {
+      merged.set(k, { ...e, bookmakers: [...e.bookmakers] });
+      continue;
+    }
+    for (const book of e.bookmakers) {
+      const idx = existing.bookmakers.findIndex((x) => x.key === book.key);
+      if (idx === -1) existing.bookmakers.push(book);
+      else existing.bookmakers[idx] = pickBook(existing.bookmakers[idx], book);
+    }
+    // Keep the earliest commenceTime for a matched pair.
+    if (e.commenceTime && (!existing.commenceTime || e.commenceTime < existing.commenceTime))
+      existing.commenceTime = e.commenceTime;
+  }
+  return [...merged.values()].sort((x, y) => x.commenceTime.localeCompare(y.commenceTime));
 }

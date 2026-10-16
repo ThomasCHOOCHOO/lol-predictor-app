@@ -1,7 +1,8 @@
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { ARB_CAVEAT, OddsEvent, bestPrices, clearOddsApiKey, detectArb, fetchOdds, getMyBooks, getOddsApiKey, mapOddsTeamName, setMyBooks, setOddsApiKey, splitStake } from '../model/odds';
+import { ARB_CAVEAT, OddsEvent, bestPrices, clearOddsApiKey, detectArb, fetchOdds, getMyBooks, getOddsApiKey, mapOddsTeamName, mergeOddsEvents, setMyBooks, setOddsApiKey, splitStake } from '../model/odds';
+import { clearOddsPapiKey, fetchOddsPapi, getOddsPapiKey, setOddsPapiKey } from '../model/oddspapi';
 import { predictMatchup } from '../model/predict';
 import { usePrediction } from '../state/PredictionContext';
 import { C, S } from '../theme';
@@ -25,12 +26,18 @@ export default function OddsScreen() {
   const [error, setError] = useState<string | null>(null);
   const [myBooks, setMyBooksState] = useState<string[] | null>(null); // null = all
   const [allBooks, setAllBooks] = useState<{ key: string; title: string }[]>([]);
+  const [source, setSource] = useState<'oddsapi' | 'oddspapi' | 'both'>('both');
+  const [papiKeyReady, setPapiKeyReady] = useState<boolean | null>(null); // null = checking
+  const [papiKeyInput, setPapiKeyInput] = useState('');
+  const [papiUsed, setPapiUsed] = useState<number | null>(null);
+  const [partialError, setPartialError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
-      const [k, b] = await Promise.all([getOddsApiKey(), getMyBooks()]);
+      const [k, b, pk] = await Promise.all([getOddsApiKey(), getMyBooks(), getOddsPapiKey()]);
       setKeyReady(!!k);
       setMyBooksState(b);
+      setPapiKeyReady(!!pk);
     })();
   }, []);
 
@@ -48,30 +55,79 @@ export default function OddsScreen() {
     setKeyReady(false);
     setEvents([]);
     setRemaining(null);
-  }, []);
+  }, [setEvents]);
+
+  const savePapiKey = useCallback(async () => {
+    const k = papiKeyInput.trim();
+    if (!k) return;
+    await setOddsPapiKey(k);
+    setPapiKeyInput('');
+    setPapiKeyReady(true);
+    setError(null);
+  }, [papiKeyInput]);
+
+  const removePapiKey = useCallback(async () => {
+    await clearOddsPapiKey();
+    setPapiKeyReady(false);
+    setEvents([]);
+    setPapiUsed(null);
+  }, [setEvents]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setPartialError(null);
     try {
-      const key = await getOddsApiKey();
-      if (!key) {
-        setKeyReady(false);
-        setError('No API key saved.');
+      const wantOddsApi = source !== 'oddspapi';
+      const wantPapi = source !== 'oddsapi';
+      const [oddsKey, papiKey] = await Promise.all([getOddsApiKey(), getOddsPapiKey()]);
+      const lists: OddsEvent[][] = [];
+      const problems: string[] = [];
+      if (wantOddsApi) {
+        if (!oddsKey) {
+          setKeyReady(false);
+          problems.push('The Odds API: no key saved.');
+        } else {
+          try {
+            const { events: evts, remaining: rem } = await fetchOdds(oddsKey);
+            lists.push(evts);
+            setRemaining(rem);
+          } catch (e: any) {
+            problems.push(`The Odds API: ${e?.message ?? 'fetch failed.'}`);
+          }
+        }
+      }
+      if (wantPapi) {
+        if (!papiKey) {
+          setPapiKeyReady(false);
+          problems.push('OddsPapi: no key saved.');
+        } else {
+          try {
+            const { events: evts, requestsUsed } = await fetchOddsPapi(papiKey);
+            lists.push(evts);
+            setPapiUsed(requestsUsed);
+          } catch (e: any) {
+            problems.push(`OddsPapi: ${e?.message ?? 'fetch failed.'}`);
+          }
+        }
+      }
+      if (lists.length === 0) {
+        setEvents([]);
+        setError(problems.join(' ') || 'No API key saved.');
         return;
       }
-      const { events: evts, remaining: rem } = await fetchOdds(key);
-      setEvents(evts);
-      setRemaining(rem);
+      const merged = lists.length === 1 ? lists[0] : mergeOddsEvents(lists[0], lists[1]);
+      setEvents(merged);
+      if (problems.length > 0) setPartialError(problems.join(' '));
       const seen = new Map<string, string>();
-      for (const e of evts) for (const b of e.bookmakers) seen.set(b.key, b.title);
+      for (const e of merged) for (const b of e.bookmakers) seen.set(b.key, b.title);
       setAllBooks([...seen.entries()].map(([key, title]) => ({ key, title })));
     } catch (e: any) {
       setError(e?.message ?? 'Failed to fetch odds.');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [source, setEvents]);
 
   const toggleBook = useCallback(
     async (key: string) => {
@@ -110,7 +166,7 @@ export default function OddsScreen() {
     [setResult, setKellySide, setOddsText, setPinBlue, setPinRed, setProbMode],
   );
 
-  if (keyReady === null) {
+  if (keyReady === null || papiKeyReady === null) {
     return (
       <SafeAreaView style={S.screen}>
         <View style={[S.screen, { justifyContent: 'center', alignItems: 'center' }]}>
@@ -120,18 +176,47 @@ export default function OddsScreen() {
     );
   }
 
+  const canRefresh =
+    source === 'oddsapi' ? keyReady : source === 'oddspapi' ? papiKeyReady : keyReady || papiKeyReady;
+
   return (
     <SafeAreaView style={S.screen}>
       <ScrollView contentContainerStyle={S.scroll} keyboardShouldPersistTaps="handled">
         <Text style={S.h1}>Sportsbook odds</Text>
         <Text style={[S.dim, { marginBottom: 12 }]}>
-          Live moneyline odds for League of Legends via The Odds API. Refresh is manual —
-          each tap costs one request from your monthly quota.
+          Live moneyline odds for League of Legends, merged across The Odds API and OddsPapi.
+          Refresh is manual — each tap costs requests from your monthly quotas.
         </Text>
+
+        {/* -------- source -------- */}
+        <View style={S.card}>
+          <Text style={S.label}>Sources</Text>
+          <View style={[S.row, { gap: 8 }]}>
+            {(
+              [
+                ['oddsapi', 'The Odds API'],
+                ['oddspapi', 'OddsPapi'],
+                ['both', 'Both (merged)'],
+              ] as const
+            ).map(([value, label]) => (
+              <Pressable
+                key={value}
+                style={[S.chip, source === value && { backgroundColor: C.blue, borderColor: C.blue }]}
+                onPress={() => setSource(value)}
+              >
+                <Text style={[S.chipText, source === value && { color: '#06121F' }]}>{label}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={[S.faint, { marginTop: 8 }]}>
+            Both merges the two feeds per match. Neither lists LoL Play-In odds right now; the
+            union is what covers you when one of them starts.
+          </Text>
+        </View>
 
         {/* -------- settings -------- */}
         <View style={S.card}>
-          <Text style={S.label}>API key</Text>
+          <Text style={S.label}>The Odds API key</Text>
           {keyReady ? (
             <View style={[S.row, { justifyContent: 'space-between' }]}>
               <Text style={[S.body, { color: C.green }]}>● Key saved</Text>
@@ -162,20 +247,60 @@ export default function OddsScreen() {
           )}
         </View>
 
+        <View style={S.card}>
+          <Text style={S.label}>OddsPapi key</Text>
+          {papiKeyReady ? (
+            <View style={[S.row, { justifyContent: 'space-between' }]}>
+              <Text style={[S.body, { color: C.green }]}>● Key saved</Text>
+              <Pressable style={S.chip} onPress={() => void removePapiKey()}>
+                <Text style={S.chipText}>Remove key</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <>
+              <Text style={[S.dim, { marginBottom: 8 }]}>
+                Free signup at oddspapi.io — paste your key below. It&apos;s stored in the
+                device keychain, never uploaded anywhere.
+              </Text>
+              <TextInput
+                style={[S.input, { marginBottom: 10 }]}
+                placeholder="Paste API key"
+                placeholderTextColor={C.faint}
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+                value={papiKeyInput}
+                onChangeText={setPapiKeyInput}
+              />
+              <Pressable style={S.btn} onPress={() => void savePapiKey()}>
+                <Text style={S.btnText}>Save key</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+
         {error && (
           <View style={[S.card, { borderColor: C.red }]}>
             <Text style={[S.body, { color: C.red }]}>{error}</Text>
           </View>
         )}
 
-        {keyReady && (
+        {partialError && !error && (
+          <View style={[S.card, { borderColor: C.amber }]}>
+            <Text style={[S.body, { color: C.amber }]}>Partial results — {partialError}</Text>
+          </View>
+        )}
+
+        {canRefresh && (
           <>
             <Pressable style={[S.btn, { marginBottom: 8 }]} onPress={() => void refresh()} disabled={loading}>
               <Text style={S.btnText}>{loading ? 'Fetching…' : 'Refresh odds'}</Text>
             </Pressable>
-            {remaining !== null && (
+            {(remaining !== null || papiUsed !== null) && (
               <Text style={[S.faint, { marginBottom: 12 }]}>
-                Quota remaining this month: {remaining} / 500
+                {remaining !== null ? `The Odds API: ${remaining} / 500 left` : ''}
+                {remaining !== null && papiUsed !== null ? ' · ' : ''}
+                {papiUsed !== null ? `OddsPapi: ${papiUsed} request${papiUsed === 1 ? '' : 's'} used this refresh` : ''}
               </Text>
             )}
 
@@ -216,6 +341,7 @@ export default function OddsScreen() {
                 key={e.id}
                 event={e}
                 activeBooks={activeBooks}
+                showSource={source === 'both'}
                 onPick={(side, price) => toKelly(e, side, price)}
               />
             ))}
@@ -229,10 +355,12 @@ export default function OddsScreen() {
 function MatchCard({
   event: e,
   activeBooks,
+  showSource,
   onPick,
 }: {
   event: OddsEvent;
   activeBooks: Set<string>;
+  showSource: boolean;
   onPick: (side: 'home' | 'away', price: number) => void;
 }) {
   const books = e.bookmakers.filter((b) => activeBooks.has(b.key));
@@ -280,6 +408,7 @@ function MatchCard({
             <View key={b.key} style={styles.row}>
               <Text style={[S.body, { flex: 1.4, fontSize: 13 }]} numberOfLines={1}>
                 {b.title}
+                {showSource && b.source ? ` · ${b.source === 'oddspapi' ? 'OddsPapi' : 'Odds API'}` : ''}
               </Text>
               <OddsCell
                 price={b.home}
