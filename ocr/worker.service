@@ -1,0 +1,15 @@
+[Unit]
+Description=LoL stream-OCR worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/lol-predictor-app/ocr
+ExecStart=/root/lol-predictor-app/ocr/.venv/bin/python worker.py --url https://www.twitch.tv/lolesports --interval 20 --port 8787
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

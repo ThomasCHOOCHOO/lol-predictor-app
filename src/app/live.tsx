@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   LIVE_BUCKETS,
   LiveGame,
@@ -9,10 +9,14 @@ import {
   elapsedMinutes,
   fetchLiveGame,
   fetchLiveMatches,
+  fetchOcrSnapshot,
   fetchWindow,
+  getOcrUrl,
   liveProba,
   mapTeamCode,
+  ocrToLiveState,
   preLogit,
+  setOcrUrl,
   snapshot,
 } from '../model/live';
 import { predictMatchup } from '../model/predict';
@@ -72,6 +76,10 @@ export default function LiveScreen() {
   const [feedDown, setFeedDown] = useState(false);
   const [ended, setEnded] = useState(false);
   const [betweenGames, setBetweenGames] = useState(false);
+  const [ocrUrl, setOcrUrlState] = useState('');
+  const [ocrUrlInput, setOcrUrlInput] = useState('');
+  const [ocrFallback, setOcrFallback] = useState(false);
+  const ocrUrlRef = useRef('');
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   // Latest game/match for the poll interval (avoids stale closures when the
   // game advances mid-series). pollRef always points at the freshest poll.
@@ -115,6 +123,28 @@ export default function LiveScreen() {
     void refreshMatches();
   }, [refreshMatches]);
 
+  // Load the saved stream-OCR worker URL (setState inside .then(), same
+  // pattern as the odds-key loading).
+  useEffect(() => {
+    getOcrUrl().then(
+      (u) => {
+        if (u) {
+          setOcrUrlState(u);
+          setOcrUrlInput(u);
+          ocrUrlRef.current = u;
+        }
+      },
+      () => {},
+    );
+  }, []);
+
+  const saveOcrUrl = useCallback(() => {
+    const u = ocrUrlInput.trim();
+    ocrUrlRef.current = u;
+    setOcrUrlState(u);
+    void setOcrUrl(u);
+  }, [ocrUrlInput]);
+
   const stopPoll = useCallback(() => {
     if (timer.current) {
       clearInterval(timer.current);
@@ -129,7 +159,8 @@ export default function LiveScreen() {
       if (!gameId || !m) return;
       const frames = await fetchWindow(gameId);
       const last = frames[frames.length - 1];
-      const s = last && last.gameState === 'in_game' ? snapshot(frames) : null;
+      let s = last && last.gameState === 'in_game' ? snapshot(frames) : null;
+      let ocrUsed = false;
       if (!s) {
         // Current game over / not started / feed gap: re-discover the live
         // game instead of stopping. The tab advances across games in a
@@ -160,8 +191,16 @@ export default function LiveScreen() {
           return;
         }
         if (next.state === 'inProgress') {
-          setFeedDown(true); // same game, transient feed gap
-          return;
+          // Same game, feed gap: try the stream-OCR fallback before giving up.
+          const ocr = ocrUrlRef.current ? await fetchOcrSnapshot(ocrUrlRef.current) : null;
+          const ocrState = ocr ? ocrToLiveState(ocr) : null;
+          if (ocrState) {
+            s = ocrState;
+            ocrUsed = true;
+          } else {
+            setFeedDown(true); // same game, transient feed gap
+            return;
+          }
         }
         if (next.state === 'unstarted') {
           setBetweenGames(true);
@@ -172,7 +211,9 @@ export default function LiveScreen() {
         stopPoll();
         return;
       }
+      if (!s) return; // unreachable: every !s path above returns or fills s
       setFeedDown(false);
+      setOcrFallback(ocrUsed);
       setBetweenGames(false);
       setSnap(s);
       // Derive sides from the game being polled (not render closure) so a
@@ -230,6 +271,7 @@ export default function LiveScreen() {
       setEnded(false);
       setFeedDown(false);
       setBetweenGames(false);
+      setOcrFallback(false);
       setError(null);
       try {
         const g = await fetchLiveGame(m.matchId);
@@ -265,6 +307,7 @@ export default function LiveScreen() {
     setPriorNote(null);
     setEnded(false);
     setBetweenGames(false);
+    setOcrFallback(false);
   }, [stopPoll]);
 
   const shownP = liveP ?? preP;
@@ -303,6 +346,24 @@ export default function LiveScreen() {
                 <Text style={S.dim}>Worlds 2026 Play-In starts Oct 16 — check back during a match.</Text>
               </View>
             )}
+            <View style={S.card}>
+              <Text style={S.label}>Stream OCR fallback (optional)</Text>
+              <Text style={[S.dim, { marginBottom: 8 }]}>
+                Worker URL, e.g. http://localhost:8787/snapshot (on your phone use your PC&apos;s LAN
+                IP). Used only when the data feed goes stale.
+              </Text>
+              <TextInput
+                style={S.input}
+                value={ocrUrlInput}
+                onChangeText={setOcrUrlInput}
+                placeholder="http://localhost:8787/snapshot"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Pressable style={[S.btn, { marginTop: 8 }]} onPress={saveOcrUrl}>
+                <Text style={S.btnText}>{ocrUrl ? 'Saved ✓' : 'Save OCR URL'}</Text>
+              </Pressable>
+            </View>
             {matches.map((m) => (
               <Pressable key={m.matchId} style={S.card} onPress={() => void selectMatch(m)}>
                 <Text style={S.label}>{m.league}</Text>
@@ -349,6 +410,11 @@ export default function LiveScreen() {
               {feedDown && (
                 <Text style={[S.body, { color: C.amber, marginTop: 8 }]}>
                   Live feed unavailable — showing pre-game probability.
+                </Text>
+              )}
+              {ocrFallback && (
+                <Text style={[S.body, { color: C.amber, marginTop: 8 }]}>
+                  Live stats via stream OCR (backup — data feed stale).
                 </Text>
               )}
             </View>

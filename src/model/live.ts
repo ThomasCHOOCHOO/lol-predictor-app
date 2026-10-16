@@ -1,4 +1,5 @@
 import { LIVE_MODELS, TEAM_ALIASES } from './artifacts';
+import { storeGet, storeSet } from './odds';
 import { isotonicCalibrate } from './predict';
 import type { LiveModelJson } from './types';
 
@@ -236,6 +237,75 @@ export function snapshot(frames: LiveFrame[]): LiveGameState | null {
     blueBarons: f.blueTeam.barons,
     redBarons: f.redTeam.barons,
     gameState: f.gameState,
+  };
+}
+
+/* ------------------------- stream-OCR fallback ------------------------- */
+// Snapshot served by ocr/worker.py when the lolesports data feed is stale.
+// The worker OCRs the broadcast scoreboard (clock, kills, gold per side).
+export interface OcrSnapshot {
+  source: 'ocr';
+  captured_at: string;
+  game_time_min: number | null;
+  left: { kills: number | null; gold_k: number | null };
+  right: { kills: number | null; gold_k: number | null };
+  stale: boolean;
+  age_s: number;
+}
+
+const OCR_URL_SLOT = 'ocr_feed_url';
+
+export async function getOcrUrl(): Promise<string | null> {
+  return storeGet(OCR_URL_SLOT);
+}
+
+export async function setOcrUrl(url: string): Promise<void> {
+  await storeSet(OCR_URL_SLOT, url.trim());
+}
+
+/** Fetch a fresh OCR snapshot. Null on any failure or stale snapshot. */
+export async function fetchOcrSnapshot(url: string): Promise<OcrSnapshot | null> {
+  try {
+    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return null;
+    const j = await res.json();
+    if (j?.source !== 'ocr' || j?.stale) return null;
+    if (typeof j.game_time_min !== 'number' || j.left == null || j.right == null) return null;
+    return j as OcrSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Convert an OCR snapshot to a LiveGameState. Broadcast convention: blue
+ * side on the left of the scoreboard. Towers/dragons/barons are not in the
+ * top bar, so they stay at 0 / empty -- the live model only uses
+ * [preLogit, goldDiffK, killDiff] anyway.
+ */
+export function ocrToLiveState(o: OcrSnapshot): LiveGameState | null {
+  if (
+    o.game_time_min == null ||
+    o.left.kills == null ||
+    o.left.gold_k == null ||
+    o.right.kills == null ||
+    o.right.gold_k == null
+  ) {
+    return null;
+  }
+  const minutes = o.game_time_min;
+  return {
+    minutes,
+    bucket: bucketFor(minutes),
+    goldDiffK: o.left.gold_k - o.right.gold_k,
+    killDiff: o.left.kills - o.right.kills,
+    blueTowers: 0,
+    redTowers: 0,
+    blueDragons: [],
+    redDragons: [],
+    blueBarons: 0,
+    redBarons: 0,
+    gameState: 'in_game',
   };
 }
 
