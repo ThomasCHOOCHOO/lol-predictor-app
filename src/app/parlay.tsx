@@ -16,7 +16,7 @@ import { C, S } from '../theme';
 type LegKindTab = 'ml' | 'totals';
 
 export default function ParlayScreen() {
-  const { bankrollText, oddsEvents } = usePrediction();
+  const { bankrollText, oddsEvents, calibrationMode } = usePrediction();
   const [legs, setLegs] = useState<ParlayLeg[]>([]);
   const [kind, setKind] = useState<LegKindTab>('ml');
   const [teamA, setTeamA] = useState('');
@@ -77,7 +77,7 @@ export default function ParlayScreen() {
       return;
     }
     const d = parsed.decimal;
-    const res = predictMatchup(a, b, null, { eloField: 'elo' });
+    const res = predictMatchup(a, b, null, { eloField: 'elo', calibration: calibrationMode });
     const p = side === 'A' ? res.pBlue : 1 - res.pBlue;
     if (!(p >= 0.05)) {
       setFormError(`Model probability ${fmtPct(p)} is below 5% — excluded from combos.`);
@@ -137,7 +137,7 @@ export default function ParlayScreen() {
     const homeModel = mapOddsTeamName(e.homeTeam);
     const awayModel = mapOddsTeamName(e.awayTeam);
     if (!homeModel || !awayModel) return;
-    const res = predictMatchup(homeModel, awayModel, null, { eloField: 'elo' });
+    const res = predictMatchup(homeModel, awayModel, null, { eloField: 'elo', calibration: calibrationMode });
     const p = which === 'home' ? res.pBlue : 1 - res.pBlue;
     if (!(p >= 0.05)) {
       setFormError(`Model probability ${fmtPct(p)} is below 5% — excluded from combos.`);

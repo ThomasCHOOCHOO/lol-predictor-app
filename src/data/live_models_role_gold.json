@@ -1,0 +1,86 @@
+{
+  "10": {
+    "features": [
+      "pre_logit",
+      "top_gold",
+      "jng_gold",
+      "mid_gold",
+      "bot_gold",
+      "sup_gold",
+      "killdiff"
+    ],
+    "coef": [
+      0.8392,
+      0.7728,
+      0.7667,
+      0.8998,
+      0.8983,
+      0.5711,
+      -0.0269
+    ],
+    "intercept": -0.046
+  },
+  "15": {
+    "features": [
+      "pre_logit",
+      "top_gold",
+      "jng_gold",
+      "mid_gold",
+      "bot_gold",
+      "sup_gold",
+      "killdiff"
+    ],
+    "coef": [
+      0.7422,
+      0.4424,
+      0.4984,
+      0.5594,
+      0.5785,
+      0.3501,
+      0.0143
+    ],
+    "intercept": -0.0536
+  },
+  "20": {
+    "features": [
+      "pre_logit",
+      "top_gold",
+      "jng_gold",
+      "mid_gold",
+      "bot_gold",
+      "sup_gold",
+      "killdiff"
+    ],
+    "coef": [
+      0.6154,
+      0.3616,
+      0.4027,
+      0.4349,
+      0.5051,
+      0.3135,
+      0.0267
+    ],
+    "intercept": -0.0733
+  },
+  "25": {
+    "features": [
+      "pre_logit",
+      "top_gold",
+      "jng_gold",
+      "mid_gold",
+      "bot_gold",
+      "sup_gold",
+      "killdiff"
+    ],
+    "coef": [
+      0.4996,
+      0.3419,
+      0.3498,
+      0.4045,
+      0.4614,
+      0.3194,
+      0.0323
+    ],
+    "intercept": -0.0759
+  }
+}

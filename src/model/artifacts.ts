@@ -1,9 +1,15 @@
 import raw from '../data/phone_artifacts.json';
+import honestRaw from '../data/honest_calibration.json';
+import playerGapsRaw from '../data/player_gaps.json';
+import liveRoleGoldRaw from '../data/live_models_role_gold.json';
 import type {
   Artifacts,
   CalibrationBin,
   CalibrationMap,
+  CalibrationMode,
   DraftInput,
+  HonestCalibrationEntry,
+  LiveModelAJson,
   LiveModelJson,
   ModelJson,
   PredictionResult,
@@ -39,6 +45,54 @@ export const MODELS = A.models;
 export const LIVE_MODELS: Record<string, LiveModelJson> | undefined = A.live_models as
   | Record<string, LiveModelJson>
   | undefined;
+
+/* ---------------- calibration toggle (v1.4.0 Phase 1, Wave 2) ---------------- */
+
+/** Honest maps + honest-vs-shipped numbers, bundled from
+ *  scripts/build_wave2_data.py (built from the v1.3.2 bundle, matching the
+ *  shipped artifact). Prefer the artifact's own calibration_honest when a
+ *  future artifact carries it; fall back to the bundled file. */
+const HONEST_BUNDLED = honestRaw as unknown as Record<'full' | 'nodraft', HonestCalibrationEntry>;
+
+function toCalibrationMap(xs: number[], ys: number[]): CalibrationMap {
+  return { xs, ys, x_min: xs[0], x_max: xs[xs.length - 1], y_min: ys[0], y_max: ys[ys.length - 1] };
+}
+
+/** The honest calibration map for the full (draft) or nodraft (pre-draft) model. */
+export function honestCalibrationFor(key: 'full' | 'nodraft'): CalibrationMap {
+  const fromArtifact = A.models[key].calibration_honest;
+  if (fromArtifact) return fromArtifact;
+  const b = HONEST_BUNDLED[key];
+  return toCalibrationMap(b.xs, b.ys);
+}
+
+/** Honest-vs-shipped evaluation numbers for the Model tab side-by-side table. */
+export const HONEST_EVAL = HONEST_BUNDLED;
+
+/** Resolve the calibration map a prediction uses for a model + toggle mode. */
+export function calibrationFor(key: 'full' | 'nodraft', mode: CalibrationMode): CalibrationMap {
+  return mode === 'honest' ? honestCalibrationFor(key) : A.models[key].calibration;
+}
+
+/* ---------------- player–team diagnostic gaps ---------------- */
+
+/** team -> (mean player Elo of current 5) - (team Elo). From
+ *  scripts/build_wave2_data.py (model repo player_ratings.json). Missing
+ *  team = no gap data = no flag (never a false warning). */
+export const PLAYER_GAPS: Record<string, number> = (A as unknown as Record<string, unknown>).player_gaps as
+  | Record<string, number>
+  | undefined ?? (playerGapsRaw as Record<string, number>);
+
+/** |player - team Elo gap| above this shows the Predict-tab warning. */
+export const PLAYER_GAP_FLAG_THRESHOLD = 100;
+
+/* ---------------- live variant A (role gold) ---------------- */
+
+/** Per-bucket variant A models, bundled from scripts/build_wave2_data.py.
+ *  Prefer the artifact's own copy when a future artifact carries it. */
+export const LIVE_MODELS_A: Record<string, LiveModelAJson> = (
+  (A as unknown as Record<string, unknown>).live_models_role_gold as Record<string, LiveModelAJson> | undefined
+) ?? (liveRoleGoldRaw as Record<string, LiveModelAJson>);
 export const BLUE_EDGE: number = A.blue_edge;
 export const TEAMS: Record<string, TeamRecord> = A.teams;
 export const TEAM_ALIASES: Record<string, string> = A.team_aliases;

@@ -1,10 +1,11 @@
 import React from 'react';
-import { SafeAreaView, ScrollView, Text, View } from 'react-native';
+import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 import MonteCarloSim from '../components/MonteCarloSim';
 import {
   BACKTESTS,
   CALIBRATION_NOTE,
   CURRENT_PATCH,
+  HONEST_EVAL,
   METRICS,
   MODEL_VERSION,
   PATCHES,
@@ -12,14 +13,71 @@ import {
   ROSTER_FORMULA,
   SNAPSHOT_DATE,
 } from '../model/artifacts';
-import { S } from '../theme';
+import type { CalibrationMode } from '../model/types';
+import { usePrediction } from '../state/PredictionContext';
+import { C, S } from '../theme';
 
 export default function InfoScreen() {
+  const { calibrationMode, setCalibrationMode } = usePrediction();
+  const full = HONEST_EVAL.full;
+  const nodraft = HONEST_EVAL.nodraft;
   return (
     <SafeAreaView style={S.screen}>
       <ScrollView contentContainerStyle={S.scroll}>
         <Text style={S.h1}>Model card</Text>
         <Text style={[S.dim, { marginBottom: 12 }]}>What this app is predicting with — no black boxes.</Text>
+
+        <View style={S.card}>
+          <Text style={S.h2}>Calibration</Text>
+          <Text style={S.dim}>
+            Active model: <Text style={[S.body, { fontWeight: '700' }]}>{calibrationMode === 'honest' ? 'Honest calibration' : 'Standard (v1.3.2)'}</Text>
+          </Text>
+          <View style={styles.segment}>
+            {(['standard', 'honest'] as CalibrationMode[]).map((m) => (
+              <Pressable
+                key={m}
+                style={[styles.segBtn, calibrationMode === m && styles.segActive]}
+                onPress={() => setCalibrationMode(m)}
+              >
+                <Text style={[styles.segText, calibrationMode === m && styles.segTextActive]}>
+                  {m === 'standard' ? 'Standard (v1.3.2)' : 'Honest'}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={S.dim}>
+            The toggle switches the calibration map used by Predict, Kelly, and Live — the same
+            model, same features, only the final mapping from raw score to probability changes.
+            Standard is the shipped map, fit on Jul–Oct games and graded on those same games, so
+            its ~0 calibration error is in-sample, not real. Honest is fit on Jul–Aug only and
+            graded on untouched September games. Flipping the toggle clears the current prediction —
+            re-run it under the new map.
+          </Text>
+        </View>
+
+        <View style={S.card}>
+          <Text style={S.h2}>Calibration, honestly measured</Text>
+          <Text style={[S.dim, { marginBottom: 8 }]}>
+            Same September games (n=1,142) for the Honest and Raw rows; the Standard row is graded
+            on the games that built its map — shown for transparency, never as quality.
+          </Text>
+          <Text style={[S.label, { marginTop: 4 }]}>Full model (draft mode)</Text>
+          <MetricRow label="Standard — log-loss" value={full.shipped_style_in_sample.logloss.toFixed(4)} note="in-sample, n=3,368" />
+          <MetricRow label="Standard — calibration error" value={full.shipped_style_in_sample.ece.toFixed(3)} note="in-sample" />
+          <MetricRow label="Honest — log-loss" value={full.honest_eval.logloss.toFixed(4)} note="untouched Sep" />
+          <MetricRow label="Honest — calibration error" value={full.honest_eval.ece.toFixed(3)} note="untouched Sep" />
+          <MetricRow label="Raw, no calibration — log-loss" value={full.raw_eval.logloss.toFixed(4)} note="untouched Sep" />
+          <Text style={[S.label, { marginTop: 12 }]}>Pre-draft model</Text>
+          <MetricRow label="Standard — log-loss" value={nodraft.shipped_style_in_sample.logloss.toFixed(4)} note="in-sample, n=3,368" />
+          <MetricRow label="Honest — log-loss" value={nodraft.honest_eval.logloss.toFixed(4)} note="untouched Sep" />
+          <MetricRow label="Honest — calibration error" value={nodraft.honest_eval.ece.toFixed(3)} note="untouched Sep" />
+          <MetricRow label="Raw, no calibration — log-loss" value={nodraft.raw_eval.logloss.toFixed(4)} note="untouched Sep" />
+          <Text style={[S.faint, { marginTop: 8 }]}>
+            On that September slice the raw model still beats both maps — September was a different
+            world (blue won 49.5% vs 56.7% in Jul–Aug). The toggle exists to answer which map wins
+            on future games, not to claim the honest map already does.
+          </Text>
+        </View>
 
         <View style={S.card}>
           <Text style={S.h2}>Bundle</Text>
@@ -84,3 +142,28 @@ function InfoRow({ k, v }: { k: string; v: string }) {
     </View>
   );
 }
+
+function MetricRow({ label, value, note }: { label: string; value: string; note: string }) {
+  return (
+    <View style={[S.row, { justifyContent: 'space-between', paddingVertical: 3 }]}>
+      <Text style={S.dim}>{label}</Text>
+      <Text style={[S.body, { fontWeight: '600' }]}>{value} <Text style={S.faint}>({note})</Text></Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  segment: {
+    flexDirection: 'row',
+    backgroundColor: C.card2,
+    borderRadius: 12,
+    padding: 4,
+    marginVertical: 12,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  segBtn: { flex: 1, paddingVertical: 10, borderRadius: 9, alignItems: 'center' },
+  segActive: { backgroundColor: C.blue },
+  segText: { color: C.dim, fontSize: 14, fontWeight: '700' },
+  segTextActive: { color: '#06121F' },
+});

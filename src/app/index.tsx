@@ -8,6 +8,8 @@ import {
   METRICS,
   PATCHES,
   PATCH_AWARE,
+  PLAYER_GAPS,
+  PLAYER_GAP_FLAG_THRESHOLD,
   SNAPSHOT_DATE,
   TEAMS,
   rosterTurnoverNote,
@@ -96,7 +98,7 @@ function ProbBar({ pBlue, blue, red }: { pBlue: number; blue: string; red: strin
 }
 
 export default function PredictScreen() {
-  const { setResult, setKellySide, probMode, setProbMode, bestOf, setBestOf } = usePrediction();
+  const { setResult, setKellySide, probMode, setProbMode, bestOf, setBestOf, calibrationMode } = usePrediction();
   const [mode, setMode] = useState<Mode>('draft');
   const [patch, setPatch] = useState<string>(CURRENT_PATCH);
   const [blue, setBlue] = useState<string | null>('T1');
@@ -132,7 +134,7 @@ export default function PredictScreen() {
       setError('Draft mode needs all 5 picks per side.');
       return;
     }
-    const r = predictMatchup(blue, red, draft, { patch });
+    const r = predictMatchup(blue, red, draft, { patch, calibration: calibrationMode });
     setLocalResult(r);
     setResult(r);
     setKellySide(r.pBlue >= 0.5 ? 'blue' : 'red');
@@ -149,10 +151,25 @@ export default function PredictScreen() {
   // prob, since sides alternate in a real series. Draft stays per-map.
   const showSeries = result?.mode === 'predraft' && probMode === 'series';
   const conv = useMemo(
-    () => (result && showSeries ? seriesConversion(result.blue, result.red, bestOf) : null),
-    [result, showSeries, bestOf],
+    () => (result && showSeries ? seriesConversion(result.blue, result.red, bestOf, calibrationMode) : null),
+    [result, showSeries, bestOf, calibrationMode],
   );
   const displayP = conv ? conv.pSeries : (result?.pBlue ?? 0);
+
+  // Diagnostic flag (display only — NEVER changes the prediction): either
+  // team's mean player Elo differs from its team Elo by > 100. A large gap
+  // means the roster on paper is much stronger/weaker than the org's
+  // results suggest — e.g. a rebuilt lineup or a star player carrying a
+  // weak org. No gap data for a team = no flag.
+  const gapFlags = useMemo(() => {
+    if (!result) return [];
+    const out: { team: string; gap: number }[] = [];
+    for (const team of [result.blue, result.red]) {
+      const gap = PLAYER_GAPS[team];
+      if (gap !== undefined && Math.abs(gap) > PLAYER_GAP_FLAG_THRESHOLD) out.push({ team, gap });
+    }
+    return out;
+  }, [result]);
 
   return (
     <SafeAreaView style={S.screen}>
@@ -264,6 +281,19 @@ export default function PredictScreen() {
               </Text>
             </View>
             <ProbBar pBlue={displayP} blue={result.blue} red={result.red} />
+            <Text style={[S.faint, { marginTop: 6 }]}>
+              Calibration: {result.calibration === 'honest' ? 'Honest (fit Jul–Aug, graded on untouched Sep games)' : 'Standard (v1.3.2 shipped)'} — switch in the Model tab.
+            </Text>
+            {gapFlags.map(({ team, gap }) => (
+              <View key={team} style={[styles.noteBox, { borderColor: C.amber }]}>
+                <Text style={[styles.noteText, { color: C.amber }]}>
+                  ⚠️ Roster note: {team}&apos;s player ratings sit {Math.abs(gap).toFixed(0)} Elo points{' '}
+                  {gap > 0 ? 'above' : 'below'} its team Elo (|gap| &gt; 100). The roster on paper is
+                  much {gap > 0 ? 'stronger' : 'weaker'} than the org&apos;s results suggest. Display
+                  only — this does not change the prediction.
+                </Text>
+              </View>
+            ))}
             {conv && (
               <Text style={[S.dim, { marginTop: 8 }]}>
                 Neutral per-map {(conv.pNeutral * 100).toFixed(0)}% (as blue {(conv.pMapAsBlue * 100).toFixed(0)}% / as red {(conv.pMapAsRed * 100).toFixed(0)}%) — sides alternate in a series.

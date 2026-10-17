@@ -3,11 +3,12 @@ import {
   COMFORT,
   MODELS,
   TEAMS,
+  calibrationFor,
   championPower,
   hasChampionPower,
   teamComfort,
 } from './artifacts';
-import type { CalibrationBin, CalibrationMap, DraftInput, ModelJson, PredictionResult } from './types';
+import type { CalibrationBin, CalibrationMap, CalibrationMode, DraftInput, ModelJson, PredictionResult } from './types';
 
 export type EloField = 'elo' | 'elo_raw'; // 'elo' = roster-adjusted (app default)
 
@@ -94,6 +95,8 @@ export function computeFeatures(
 export function predictProba(
   features: Record<string, number>,
   model: ModelJson,
+  mode: CalibrationMode = 'standard',
+  modelKey: 'full' | 'nodraft' = 'full',
 ): { pRaw: number; pCal: number } {
   let z = model.intercept;
   for (let i = 0; i < model.features.length; i++) {
@@ -101,12 +104,14 @@ export function predictProba(
     z += ((f - model.scaler_mean[i]) / model.scaler_scale[i]) * model.coef[i];
   }
   const pRaw = sigmoid(z);
-  return { pRaw, pCal: isotonicCalibrate(pRaw, model.calibration) };
+  return { pRaw, pCal: isotonicCalibrate(pRaw, calibrationFor(modelKey, mode)) };
 }
 
 export interface PredictOptions {
   eloField?: EloField;
   patch?: string; // required for draft mode; pre-draft ignores champion power
+  /** Calibration map selector — the Model tab toggle. Default 'standard'. */
+  calibration?: CalibrationMode;
 }
 
 /** Full pipeline: features -> standardized logistic regression -> isotonic calibration. */
@@ -117,9 +122,11 @@ export function predictMatchup(
   opts: PredictOptions = {},
 ): PredictionResult {
   const eloField = opts.eloField ?? 'elo';
+  const calibration = opts.calibration ?? 'standard';
+  const modelKey = draft ? 'full' : 'nodraft';
   const model = draft ? MODELS.full : MODELS.nodraft;
   const feats = computeFeatures(blue, red, draft, opts.patch ?? 'all', eloField);
-  const { pRaw, pCal } = predictProba(feats, model);
+  const { pRaw, pCal } = predictProba(feats, model, calibration, modelKey);
   return {
     blue,
     red,
@@ -128,6 +135,7 @@ export function predictMatchup(
     mode: draft ? 'draft' : 'predraft',
     patch: draft ? (opts.patch ?? null) : null,
     features: feats,
+    calibration,
   };
 }
 
@@ -191,9 +199,14 @@ export interface SeriesConversion {
  *
  * Only valid pre-draft (draft=null); draft mode stays per-map.
  */
-export function seriesConversion(first: string, second: string, bestOf: number): SeriesConversion {
-  const asBlue = predictMatchup(first, second, null, {}).pBlue;
-  const asRed = 1 - predictMatchup(second, first, null, {}).pBlue;
+export function seriesConversion(
+  first: string,
+  second: string,
+  bestOf: number,
+  calibration: CalibrationMode = 'standard',
+): SeriesConversion {
+  const asBlue = predictMatchup(first, second, null, { calibration }).pBlue;
+  const asRed = 1 - predictMatchup(second, first, null, { calibration }).pBlue;
   const neutral = (asBlue + asRed) / 2;
   return { pMapAsBlue: asBlue, pMapAsRed: asRed, pNeutral: neutral, pSeries: seriesProb(neutral, bestOf) };
 }

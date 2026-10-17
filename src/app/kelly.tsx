@@ -7,7 +7,7 @@ import { usePrediction, type KellySide } from '../state/PredictionContext';
 import { C, S } from '../theme';
 
 export default function KellyScreen() {
-  const { result, kellySide, setKellySide, oddsText, setOddsText, bankrollText, setBankrollText, pinBlue, pinRed, probMode, bestOf } = usePrediction();
+  const { result, kellySide, setKellySide, oddsText, setOddsText, bankrollText, setBankrollText, pinBlue, pinRed, probMode, bestOf, calibrationMode } = usePrediction();
 
   // Effective probability for the chosen side: in pre-draft Series mode the
   // bet is a series bet, so use the series-converted prob (built from the
@@ -15,7 +15,7 @@ export default function KellyScreen() {
   const { p, pBlueEff, pRedEff, pNeutral } = useMemo(() => {
     if (!result) return { p: null, pBlueEff: 0, pRedEff: 0, pNeutral: null as number | null };
     if (result.mode === 'predraft' && probMode === 'series') {
-      const conv = seriesConversion(result.blue, result.red, bestOf);
+      const conv = seriesConversion(result.blue, result.red, bestOf, calibrationMode);
       return {
         p: kellySide === 'blue' ? conv.pSeries : 1 - conv.pSeries,
         pBlueEff: conv.pSeries,
@@ -29,7 +29,7 @@ export default function KellyScreen() {
       pRedEff: 1 - result.pBlue,
       pNeutral: null as number | null,
     };
-  }, [result, kellySide, probMode, bestOf]);
+  }, [result, kellySide, probMode, bestOf, calibrationMode]);
 
   const sideName = result ? (kellySide === 'blue' ? result.blue : result.red) : null;
   // Odds field accepts decimal (1.85) OR American (-122 / +183) — auto-detected.
@@ -103,6 +103,9 @@ export default function KellyScreen() {
                   Using Bo{bestOf} series probability{pNeutral !== null ? ` · neutral per-map ${fmtPct(pNeutral, 0)}` : ''}.
                 </Text>
               )}
+              <Text style={[S.faint, { marginBottom: 12 }]}>
+                Calibration: {result.calibration === 'honest' ? 'Honest' : 'Standard (v1.3.2)'} — switch in the Model tab.
+              </Text>
               <Text style={S.label}>Odds (your book) — decimal or American</Text>
               <TextInput
                 style={[S.input, { marginBottom: 4 }]}

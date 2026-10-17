@@ -30,7 +30,7 @@ function fmtTime(iso: string): string {
 }
 
 export default function OddsScreen() {
-  const { setResult, setKellySide, setOddsText, setPinBlue, setPinRed, setProbMode, oddsEvents: events, setOddsEvents: setEvents } = usePrediction();
+  const { setResult, setKellySide, setOddsText, setPinBlue, setPinRed, setProbMode, calibrationMode, oddsEvents: events, setOddsEvents: setEvents } = usePrediction();
   const [keyReady, setKeyReady] = useState<boolean | null>(null); // null = checking
   const [keyInput, setKeyInput] = useState('');
   const [remaining, setRemaining] = useState<number | null>(null);
@@ -218,7 +218,7 @@ export default function OddsScreen() {
       const homeModel = mapOddsTeamName(e.homeTeam);
       const awayModel = mapOddsTeamName(e.awayTeam);
       if (!homeModel || !awayModel) return;
-      const result = predictMatchup(homeModel, awayModel, null, { eloField: 'elo' });
+      const result = predictMatchup(homeModel, awayModel, null, { eloField: 'elo', calibration: calibrationMode });
       setResult(result);
       // Odds-tab Match markets are series bets, so Kelly uses the series prob.
       setProbMode('series');
@@ -230,7 +230,7 @@ export default function OddsScreen() {
       setOddsText(price.toFixed(2));
       router.push('/kelly');
     },
-    [setResult, setKellySide, setOddsText, setPinBlue, setPinRed, setProbMode],
+    [setResult, setKellySide, setOddsText, setPinBlue, setPinRed, setProbMode, calibrationMode],
   );
 
   if (keyReady === null || papiKeyReady === null) {

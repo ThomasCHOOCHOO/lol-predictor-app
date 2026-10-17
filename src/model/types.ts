@@ -1,5 +1,12 @@
 /** Types mirroring model/phone_artifacts.json (model_version 1.x, read dynamically). */
 
+/** Calibration map selector (v1.4.0 Phase 1, Wave 2 — Model tab toggle).
+ *  'standard' = shipped v1.3.2 map (fit on the Jul–Oct tail, graded on those
+ *  same games — its ~0 ECE is in-sample, not quality). 'honest' = map fit on
+ *  Jul–Aug only, graded on untouched Sep games. Same model, same features —
+ *  only the final raw-score → probability mapping changes. */
+export type CalibrationMode = 'standard' | 'honest';
+
 export interface CalibrationMap {
   xs: number[];
   ys: number[];
@@ -17,6 +24,9 @@ export interface ModelJson {
   scaler_mean: number[];
   scaler_scale: number[];
   calibration: CalibrationMap;
+  /** Honest map, when the artifact carries it (v1.4.0+). Older artifacts
+   *  resolve it from the bundled src/data/honest_calibration.json. */
+  calibration_honest?: CalibrationMap;
 }
 
 export interface LiveModelJson {
@@ -25,6 +35,15 @@ export interface LiveModelJson {
   coef: number[];
   intercept: number;
   calibration: CalibrationMap;
+}
+
+/** Live variant A (role-gold) model. No calibration map exists for A yet —
+ *  the research export carries metrics only — so liveProbaA returns the RAW
+ *  prob and the UI must label it uncalibrated. */
+export interface LiveModelAJson {
+  features: string[]; // ["pre_logit", "top_gold", "jng_gold", "mid_gold", "bot_gold", "sup_gold", "killdiff"]
+  coef: number[];
+  intercept: number;
 }
 
 export interface TeamRecord {
@@ -91,4 +110,18 @@ export interface PredictionResult {
   mode: 'predraft' | 'draft';
   patch: string | null; // patch used for champion power (draft mode)
   features: Record<string, number>;
+  /** Calibration map this prediction was computed with. */
+  calibration: CalibrationMode;
+}
+
+/** One entry of the bundled src/data/honest_calibration.json. */
+export interface HonestCalibrationEntry {
+  xs: number[];
+  ys: number[];
+  fitted_on: string;
+  n: number;
+  honest_eval: { logloss: number; ece: number; n: number };
+  raw_eval: { logloss: number; ece: number };
+  shipped_style_in_sample: { logloss: number; ece: number; n: number; note: string };
+  n_steps: number;
 }

@@ -5,25 +5,111 @@ import {
   LiveGame,
   LiveGameState,
   LiveMatch,
+  MatchGameInfo,
+  RoleGoldDiff,
   bucketFor,
+  computeDeplNet,
   elapsedMinutes,
   fetchLiveGame,
   fetchLiveMatches,
+  fetchMatchGames,
+  fetchMatchScore,
   fetchOcrSnapshot,
   fetchWindow,
   getOcrUrl,
   liveProba,
+  liveProbaA,
+  loadSeriesState,
   mapTeamCode,
   ocrToLiveState,
   preLogit,
+  saveSeriesState,
   setOcrUrl,
   snapshot,
 } from '../model/live';
-import { predictMatchup } from '../model/predict';
+import { predictMatchup, seriesConversion } from '../model/predict';
+import {
+  SeriesState,
+  initSeries,
+  mapWinProb,
+  recordGame,
+  seriesWinProb,
+  withNextBlue,
+} from '../model/seriesState';
 import { usePrediction } from '../state/PredictionContext';
 import { C, S } from '../theme';
 
 const POLL_MS = 12000;
+
+/** "Bo5" -> 5. Falls back to 5 (Worlds Play-In/Knockout default) when the
+ *  feed omits the strategy count. */
+function parseBestOf(strategy?: string): number {
+  const m = strategy ? /Bo(\d+)/i.exec(strategy) : null;
+  const n = m ? parseInt(m[1], 10) : NaN;
+  return Number.isInteger(n) && n >= 1 ? n : 5;
+}
+
+/**
+ * Fold newly completed games into a SeriesState.
+ *
+ * The GW API exposes no per-game winner, so a completed game's winner is
+ * attributed from the match-level gameWins delta: if exactly one game is
+ * missing and the score moved by exactly one win for one team, that team
+ * won it. Anything else is ambiguous — if several games finished while the
+ * tab was away (or the score feed jumped), the posterior restarts from
+ * the prior at the live score instead of fabricating a per-game order.
+ * The banked score is preserved; only the μ adjustment resets. Games
+ * covered by a restart are marked via accountedThrough so they are not
+ * re-processed on later polls.
+ *
+ * closingFor/picksFor resolve the closing live estimate and picks for a
+ * game id (null/empty when the tab wasn't watching that game — catch-up
+ * then uses a neutral closing estimate of 0.5 and no picks).
+ */
+function reconcileSeries(
+  base: SeriesState,
+  match: LiveMatch,
+  games: MatchGameInfo[],
+  score: Record<string, number> | null,
+  closingFor: (gameId: string) => number | null,
+  picksFor: (game: MatchGameInfo) => { a: string[]; b: string[] },
+  fresh: () => SeriesState,
+): SeriesState {
+  const liveA = score?.[match.blueCode];
+  const liveB = score?.[match.redCode];
+  if (liveA === undefined || liveB === undefined) return base; // no score info
+  if (liveA < base.a || liveB < base.b) return base; // score feed lagging behind state
+  const completed = games
+    .filter((g) => g.state === 'completed')
+    .sort((x, y) => x.number - y.number);
+  const missing = completed.filter((g) => g.number > base.accountedThrough);
+  if (missing.length === 0) return base;
+  const dA = liveA - base.a;
+  const dB = liveB - base.b;
+  if (dA + dB === 0) return base; // score hasn't moved yet — defer attribution
+  if (missing.length === 1 && ((dA === 1 && dB === 0) || (dA === 0 && dB === 1))) {
+    const g = missing[0];
+    const picks = picksFor(g);
+    const next = recordGame(base, {
+      gameNumber: g.number,
+      winnerA: dA === 1,
+      closingC: closingFor(g.gameId) ?? 0.5,
+      blueA: g.blueCode === match.blueCode,
+      draftLift: 0, // no draft source in the Live tab yet
+      picksA: picks.a,
+      picksB: picks.b,
+    });
+    const deplNet = computeDeplNet(next.teamA, next.teamB, next.usedChamps);
+    return deplNet === next.deplNet ? next : { ...next, deplNet };
+  }
+  const freshState = fresh();
+  return {
+    ...freshState,
+    a: liveA,
+    b: liveB,
+    accountedThrough: Math.max(...completed.map((g) => g.number)),
+  };
+}
 
 function ProbBar({ pBlue, blue, red }: { pBlue: number; blue: string; red: string }) {
   const pct = Math.round(pBlue * 100);
@@ -62,7 +148,7 @@ function StatCell({ label, blue, red }: { label: string; blue: string; red: stri
 }
 
 export default function LiveScreen() {
-  const { result: ctxResult } = usePrediction();
+  const { result: ctxResult, calibrationMode } = usePrediction();
   const [matches, setMatches] = useState<LiveMatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +157,7 @@ export default function LiveScreen() {
   const [swapped, setSwapped] = useState(false);
   const [snap, setSnap] = useState<LiveGameState | null>(null);
   const [liveP, setLiveP] = useState<number | null>(null);
+  const [roleGold, setRoleGold] = useState<RoleGoldDiff | null>(null);
   const [preP, setPreP] = useState<number | null>(null);
   const [priorNote, setPriorNote] = useState<string | null>(null);
   const [feedDown, setFeedDown] = useState(false);
@@ -79,8 +166,18 @@ export default function LiveScreen() {
   const [ocrUrl, setOcrUrlState] = useState('');
   const [ocrUrlInput, setOcrUrlInput] = useState('');
   const [ocrFallback, setOcrFallback] = useState(false);
+  const [series, setSeries] = useState<SeriesState | null>(null);
   const ocrUrlRef = useRef('');
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Stateful series model (v1.4.0 Phase 1): seriesRef mirrors the series
+  // state so poll() can reconcile it without stale closures. closingRef
+  // holds the latest closing live estimate (A perspective) for the game
+  // being polled; picksRef holds that game's picks from window metadata.
+  const seriesRef = useRef<SeriesState | null>(null);
+  const closingRef = useRef<{ gameId: string; cA: number } | null>(null);
+  const picksRef = useRef<{ gameId: string; bluePicks: string[]; redPicks: string[] } | null>(
+    null,
+  );
   // Latest game/match for the poll interval (avoids stale closures when the
   // game advances mid-series). pollRef always points at the freshest poll.
   const gameIdRef = useRef<string | null>(null);
@@ -157,30 +254,69 @@ export default function LiveScreen() {
   const poll = useCallback(
     async (gameId: string | null, m: LiveMatch | null, g: LiveGame | null) => {
       if (!gameId || !m) return;
-      const frames = await fetchWindow(gameId);
+      const win = await fetchWindow(gameId);
+      const frames = win.frames;
+      // Picks for this game (Fearless pool tracking). Only overwrite when
+      // the feed actually returned metadata — a stale/empty window must
+      // not clobber the last known picks for a game that just ended.
+      if (win.bluePicks.length || win.redPicks.length) {
+        picksRef.current = { gameId, bluePicks: win.bluePicks, redPicks: win.redPicks };
+      }
       const last = frames[frames.length - 1];
       let s = last && last.gameState === 'in_game' ? snapshot(frames) : null;
+      if (s) setRoleGold(win.roleGold);
       let ocrUsed = false;
       if (!s) {
         // Current game over / not started / feed gap: re-discover the live
         // game instead of stopping. The tab advances across games in a
         // series on its own; it only stops when the match is over.
-        let next: LiveGame | null = null;
-        try {
-          next = await fetchLiveGame(m.matchId);
-        } catch {
-          next = null;
+        const [next, games, score] = await Promise.all([
+          fetchLiveGame(m.matchId).catch(() => null),
+          fetchMatchGames(m.matchId).catch(() => [] as MatchGameInfo[]),
+          fetchMatchScore(m.matchId).catch(() => null),
+        ]);
+        // Fold completed games into the stateful series model (winner
+        // attributed from the gameWins delta — see reconcileSeries).
+        if (seriesRef.current) {
+          const cur = seriesRef.current;
+          const fresh = () => initSeries(cur.teamA, cur.teamB, cur.bestOf, cur.pNeutral, cur.s);
+          const closingFor = (gid: string) =>
+            closingRef.current?.gameId === gid ? closingRef.current.cA : null;
+          const picksFor = (g0: MatchGameInfo) => {
+            const p = picksRef.current;
+            if (!p || p.gameId !== g0.gameId) return { a: [], b: [] };
+            const blueIsA = g0.blueCode === m.blueCode;
+            return blueIsA
+              ? { a: p.bluePicks, b: p.redPicks }
+              : { a: p.redPicks, b: p.bluePicks };
+          };
+          const rec = reconcileSeries(cur, m, games, score, closingFor, picksFor, fresh);
+          if (rec !== cur) {
+            seriesRef.current = rec;
+            setSeries(rec);
+            void saveSeriesState(m.matchId, rec);
+          }
         }
         if (!next) {
           setFeedDown(true);
           return;
         }
         if (next.state === 'inProgress' && next.gameId !== gameId) {
+          // New game starting: its side is the next unresolved game.
+          if (seriesRef.current) {
+            const adv = withNextBlue(seriesRef.current, next.blueCode === m.blueCode ? 'A' : 'B');
+            if (adv !== seriesRef.current) {
+              seriesRef.current = adv;
+              setSeries(adv);
+              void saveSeriesState(m.matchId, adv);
+            }
+          }
           setGame(next);
           gameRef.current = next;
           gameIdRef.current = next.gameId;
           setSnap(null);
           setLiveP(null);
+          setRoleGold(null);
           setPreP(null);
           setPriorNote(null);
           setBetweenGames(false);
@@ -197,12 +333,22 @@ export default function LiveScreen() {
           if (ocrState) {
             s = ocrState;
             ocrUsed = true;
+            setRoleGold(null); // OCR has team totals only — no per-role gold
           } else {
             setFeedDown(true); // same game, transient feed gap
             return;
           }
         }
         if (next.state === 'unstarted') {
+          // Between games the next game's sides are unknown — the DP
+          // averages 50/50 over the first step instead of reusing the
+          // last game's side.
+          if (seriesRef.current && seriesRef.current.nextBlue !== null) {
+            const cleared = withNextBlue(seriesRef.current, null);
+            seriesRef.current = cleared;
+            setSeries(cleared);
+            void saveSeriesState(m.matchId, cleared);
+          }
           setBetweenGames(true);
           setFeedDown(false);
           return;
@@ -234,7 +380,7 @@ export default function LiveScreen() {
           priorP = sameSides ? r.pBlue : 1 - r.pBlue;
           note = 'using draft-adjusted prior';
         } else {
-          priorP = predictMatchup(pollBlueModel, pollRedModel, null, { eloField: 'elo' }).pBlue;
+          priorP = predictMatchup(pollBlueModel, pollRedModel, null, { eloField: 'elo', calibration: calibrationMode }).pBlue;
         }
         setPreP(priorP);
         setPriorNote(note);
@@ -245,12 +391,21 @@ export default function LiveScreen() {
             b,
           );
           setLiveP(lr ? lr.pCal : null);
+          if (lr) {
+            // Closing estimate for the series model, in A perspective.
+            // (Inherits the tab's existing liveP orientation, including
+            // the known swapped-goldDiffK caveat.)
+            closingRef.current = {
+              gameId,
+              cA: pollBlue === m.blueCode ? lr.pCal : 1 - lr.pCal,
+            };
+          }
         } else {
           setLiveP(null); // <10 min: fall back to pre-game
         }
       }
     },
-    [swapped, stopPoll, ctxResult],
+    [swapped, stopPoll, ctxResult, calibrationMode],
   );
 
   // Keep the interval pointed at the freshest poll closure.
@@ -267,11 +422,16 @@ export default function LiveScreen() {
       setSnap(null);
       setLiveP(null);
       setPreP(null);
+      setRoleGold(null);
       setPriorNote(null);
       setEnded(false);
       setFeedDown(false);
       setBetweenGames(false);
       setOcrFallback(false);
+      setSeries(null);
+      seriesRef.current = null;
+      closingRef.current = null;
+      picksRef.current = null;
       setError(null);
       try {
         const g = await fetchLiveGame(m.matchId);
@@ -282,6 +442,29 @@ export default function LiveScreen() {
         setGame(g);
         gameRef.current = g;
         gameIdRef.current = g.gameId;
+        // Init the stateful series model: fresh, persisted, or reconciled
+        // against the live score (a refresh mid-series resumes it).
+        const teamA = mapTeamCode(m.blueCode) ?? m.blueCode;
+        const teamB = mapTeamCode(m.redCode) ?? m.redCode;
+        const bestOf = parseBestOf(m.strategy);
+        const conv = seriesConversion(teamA, teamB, bestOf, calibrationMode);
+        const s0 = (preLogit(conv.pMapAsBlue) - preLogit(conv.pMapAsRed)) / 2;
+        const fresh = () => initSeries(teamA, teamB, bestOf, conv.pNeutral, s0);
+        let base = await loadSeriesState(m.matchId);
+        if (!base || base.teamA !== teamA || base.teamB !== teamB || base.bestOf !== bestOf) {
+          base = fresh();
+        }
+        const [games0, score0] = await Promise.all([
+          fetchMatchGames(m.matchId).catch(() => [] as MatchGameInfo[]),
+          fetchMatchScore(m.matchId).catch(() => null),
+        ]);
+        let st = reconcileSeries(base, m, games0, score0, () => null, () => ({ a: [], b: [] }), fresh);
+        if (g.state === 'inProgress') {
+          st = withNextBlue(st, g.blueCode === m.blueCode ? 'A' : 'B');
+        }
+        seriesRef.current = st;
+        setSeries(st);
+        await saveSeriesState(m.matchId, st);
         await poll(g.gameId, m, g);
         timer.current = setInterval(
           () => void pollRef.current(gameIdRef.current, matchRef.current, gameRef.current),
@@ -291,7 +474,7 @@ export default function LiveScreen() {
         setError('Could not load game details.');
       }
     },
-    [poll, stopPoll],
+    [poll, stopPoll, calibrationMode],
   );
 
   const back = useCallback(() => {
@@ -304,14 +487,45 @@ export default function LiveScreen() {
     setSnap(null);
     setLiveP(null);
     setPreP(null);
+    setRoleGold(null);
     setPriorNote(null);
     setEnded(false);
     setBetweenGames(false);
     setOcrFallback(false);
+    setSeries(null);
+    seriesRef.current = null;
+    closingRef.current = null;
+    picksRef.current = null;
   }, [stopPoll]);
 
   const shownP = liveP ?? preP;
+  const seriesP = series ? seriesWinProb(series) : null;
+  /** Next-map win prob for the series card, while between games. */
+  const nextMapP = series && betweenGames ? mapWinProb(series) : null;
   const bucket = snap ? bucketFor(snap.minutes) : null;
+
+  // Variant A (role gold) shadow comparison — DISPLAY ONLY, never drives
+  // sizing. Role gold is oriented to the displayed sides (negated when the
+  // user swapped). Note the baseline's gold feature does NOT get this
+  // treatment — it carries a known swapped-orientation caveat (see
+  // docs/phase1-wave2.md), so A-vs-baseline comparisons while swapped are
+  // not apples-to-apples.
+  const orientedRoleGold = roleGold
+    ? swapped
+      ? { top: -roleGold.top, jng: -roleGold.jng, mid: -roleGold.mid, bot: -roleGold.bot, sup: -roleGold.sup }
+      : roleGold
+    : null;
+  const variantA =
+    snap && bucket !== null && preP !== null && orientedRoleGold
+      ? liveProbaA(
+          {
+            preLogit: preLogit(preP),
+            roleGold: orientedRoleGold,
+            killDiff: swapped ? -snap.killDiff : snap.killDiff,
+          },
+          bucket,
+        )
+      : null;
 
   return (
     <SafeAreaView style={S.screen}>
@@ -419,6 +633,32 @@ export default function LiveScreen() {
               )}
             </View>
 
+            {series && (
+              <View style={S.card}>
+                <Text style={S.label}>Series · stateful model</Text>
+                <Text style={S.h2}>
+                  {series.teamA} {series.a} – {series.b} {series.teamB}
+                </Text>
+                {seriesP !== null && (
+                  <Text style={[S.body, { marginTop: 8 }]}>
+                    {series.teamA} to win the series: {(seriesP * 100).toFixed(1)}%
+                  </Text>
+                )}
+                {nextMapP !== null && (
+                  <Text style={S.dim}>
+                    Next map: {series.teamA} {(nextMapP * 100).toFixed(1)}% (stateful — updates
+                    after each map)
+                  </Text>
+                )}
+                {series.history.length > 0 && (
+                  <Text style={S.dim}>
+                    Map winners: {series.history.map((h) => (h.winnerA ? 'A' : 'B')).join(' · ')}
+                    {'  '}(A = {series.teamA})
+                  </Text>
+                )}
+              </View>
+            )}
+
             {shownP !== null && blueModel && redModel && (
               <View style={S.card}>
                 <ProbBar pBlue={shownP} blue={blueModel} red={redModel} />
@@ -430,6 +670,18 @@ export default function LiveScreen() {
                       : 'Pre-game model'}
                   {priorNote ? ` · ${priorNote}` : ''}
                 </Text>
+                {liveP !== null && bucket !== null && (
+                  variantA ? (
+                    <Text style={[S.faint, { marginTop: 4 }]}>
+                      Variant A (role gold, shadow — uncalibrated): {(variantA.pCal * 100).toFixed(1)}% vs
+                      baseline {(liveP * 100).toFixed(1)}%. Shadow only — does not drive sizing.
+                    </Text>
+                  ) : (
+                    <Text style={[S.faint, { marginTop: 4 }]}>
+                      Variant A (role gold, shadow): n/a — this frame has no per-role gold.
+                    </Text>
+                  )
+                )}
               </View>
             )}
 

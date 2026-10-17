@@ -1,13 +1,21 @@
-import React, { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import React, { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { OddsEvent } from '../model/odds';
-import type { PredictionResult } from '../model/types';
+import type { CalibrationMode, PredictionResult } from '../model/types';
 
 export type KellySide = 'blue' | 'red';
 export type ProbMode = 'map' | 'series';
 
+const CALIBRATION_MODE_KEY = 'calibration_mode_v1';
+
 interface PredictionState {
   result: PredictionResult | null;
   setResult: (r: PredictionResult | null) => void;
+  /** Calibration map selector (Model tab toggle). Default 'standard'.
+   *  Changing it clears the current result: a prediction computed under
+   *  the other map is stale and must be re-run. */
+  calibrationMode: CalibrationMode;
+  setCalibrationMode: (m: CalibrationMode) => void;
   /** Side the Kelly tab is sizing a bet for. Defaults to the model's favorite. */
   kellySide: KellySide;
   setKellySide: (s: KellySide) => void;
@@ -35,6 +43,7 @@ const Ctx = createContext<PredictionState | null>(null);
 
 export function PredictionProvider({ children }: { children: ReactNode }) {
   const [result, setResultState] = useState<PredictionResult | null>(null);
+  const [calibrationMode, setCalibrationModeState] = useState<CalibrationMode>('standard');
   const [kellySide, setKellySide] = useState<KellySide>('blue');
   const [probMode, setProbMode] = useState<ProbMode>('map');
   const [bestOf, setBestOf] = useState<number>(5);
@@ -44,6 +53,16 @@ export function PredictionProvider({ children }: { children: ReactNode }) {
   const [pinRed, setPinRed] = useState<number | null>(null);
   const [oddsEvents, setOddsEvents] = useState<OddsEvent[]>([]);
 
+  // Restore the persisted calibration mode (default 'standard' on first run).
+  useEffect(() => {
+    AsyncStorage.getItem(CALIBRATION_MODE_KEY).then(
+      (v) => {
+        if (v === 'honest' || v === 'standard') setCalibrationModeState(v);
+      },
+      () => {},
+    );
+  }, []);
+
   // A new prediction invalidates any stored Pinnacle prices (callers set them after).
   const setResult = useCallback((r: PredictionResult | null) => {
     setResultState(r);
@@ -51,9 +70,19 @@ export function PredictionProvider({ children }: { children: ReactNode }) {
     setPinRed(null);
   }, []);
 
+  // Flipping the calibration toggle invalidates the current prediction —
+  // it was computed under the other map — and persists the choice.
+  const setCalibrationMode = useCallback((m: CalibrationMode) => {
+    setCalibrationModeState(m);
+    setResultState(null);
+    setPinBlue(null);
+    setPinRed(null);
+    void AsyncStorage.setItem(CALIBRATION_MODE_KEY, m);
+  }, []);
+
   return (
     <Ctx.Provider
-      value={{ result, setResult, kellySide, setKellySide, probMode, setProbMode, bestOf, setBestOf, oddsText, setOddsText, bankrollText, setBankrollText, pinBlue, setPinBlue, pinRed, setPinRed, oddsEvents, setOddsEvents }}
+      value={{ result, setResult, calibrationMode, setCalibrationMode, kellySide, setKellySide, probMode, setProbMode, bestOf, setBestOf, oddsText, setOddsText, bankrollText, setBankrollText, pinBlue, setPinBlue, pinRed, setPinRed, oddsEvents, setOddsEvents }}
     >
       {children}
     </Ctx.Provider>
