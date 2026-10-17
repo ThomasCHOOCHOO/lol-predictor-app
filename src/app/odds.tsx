@@ -1,7 +1,7 @@
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { ARB_CAVEAT, BookmakerOdds, OddsEvent, bestPrices, clearOddsApiKey, detectArb, fetchOdds, getMyBooks, getOddsApiKey, mapOddsTeamName, mergeOddsEvents, setMyBooks, setOddsApiKey, splitStake } from '../model/odds';
+import { ARB_ALERT_BAR, ARB_CAVEAT, BookmakerOdds, OddsEvent, arbFromBestLegs, bestPrices, clearOddsApiKey, detectArb, fetchOdds, getMyBooks, getOddsApiKey, mapOddsTeamName, mergeOddsEvents, setMyBooks, setOddsApiKey, splitStake } from '../model/odds';
 import { clearOddsPapiKey, BOOK_TITLES, fetchOddsPapi, getOddsPapiKey, setOddsPapiKey } from '../model/oddspapi';
 import {
   OddsSnapshot,
@@ -12,6 +12,7 @@ import {
   computeBookStats,
   loadOddsHistory,
 } from '../model/oddsHistory';
+import { parseOddsInput } from '../model/kelly';
 import { predictMatchup } from '../model/predict';
 import { usePrediction } from '../state/PredictionContext';
 import { C, S } from '../theme';
@@ -89,6 +90,14 @@ export default function OddsScreen() {
   const [papiKeyInput, setPapiKeyInput] = useState('');
   const [papiUsed, setPapiUsed] = useState<number | null>(null);
   const [partialError, setPartialError] = useState<string | null>(null);
+  // Prefill for the arb calculator, set by tapping an arb row in the saved-pull banner.
+  // The calculator remounts (fresh inputs from the prefill) on each tap via arbCalcKey.
+  const [arbPrefill, setArbPrefill] = useState<ArbPrefill | null>(null);
+  const [arbCalcKey, setArbCalcKey] = useState(0);
+  const handleArbSelect = useCallback((p: ArbPrefill) => {
+    setArbPrefill(p);
+    setArbCalcKey((k) => k + 1);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -312,7 +321,16 @@ export default function OddsScreen() {
         </Text>
 
         {/* -------- last saved pull: prominent, always visible -------- */}
-        <LastPullBanner snapshots={lastPull} now={now} loaded={historyLoaded} titleOf={titleOf} />
+        <LastPullBanner
+          snapshots={lastPull}
+          now={now}
+          loaded={historyLoaded}
+          titleOf={titleOf}
+          onArbSelect={handleArbSelect}
+        />
+
+        {/* -------- arb calculator: planning tool, manual inputs -------- */}
+        <ArbCalculator key={arbCalcKey} prefill={arbPrefill} />
 
         {/* -------- source -------- */}
         <View style={S.card}>
@@ -555,11 +573,14 @@ function LastPullBanner({
   now,
   loaded,
   titleOf,
+  onArbSelect,
 }: {
   snapshots: OddsSnapshot[] | null;
   now: number;
   loaded: boolean;
   titleOf: (key: string) => string;
+  /** Tapping an arb row loads that pair into the arb calculator. */
+  onArbSelect: (prefill: ArbPrefill) => void;
 }) {
   if (!loaded) return null;
   if (!snapshots || snapshots.length === 0) {
@@ -625,8 +646,195 @@ function LastPullBanner({
               {s.bestAway ? `${s.bestAway.price.toFixed(2)} ${s.awayTeam} @ ${titleOf(s.bestAway.bookKey)}` : '–'}
             </Text>
           )}
+          {(() => {
+            // Arb from THIS saved pull's best legs (best across all books in
+            // the pull, not just the stored rows). Same formula as the live
+            // board via arbFromBestLegs; only arbs at/above the alert bar
+            // get a row. Labeled as saved-pull math — re-check live prices.
+            const homeLeg = s.bestHome
+              ? { price: s.bestHome.price, bookKey: s.bestHome.bookKey, bookTitle: titleOf(s.bestHome.bookKey) }
+              : null;
+            const awayLeg = s.bestAway
+              ? { price: s.bestAway.price, bookKey: s.bestAway.bookKey, bookTitle: titleOf(s.bestAway.bookKey) }
+              : null;
+            const arb = arbFromBestLegs(homeLeg, awayLeg);
+            if (!arb || arb.profitPct < ARB_ALERT_BAR) return null;
+            return (
+              <Pressable
+                style={[styles.arbPanel, { marginTop: 8 }]}
+                onPress={() =>
+                  onArbSelect({
+                    priceA: arb.home.price,
+                    priceB: arb.away.price,
+                    bookA: arb.home.bookTitle,
+                    bookB: arb.away.bookTitle,
+                    matchup: `${s.homeTeam} vs ${s.awayTeam}`,
+                  })
+                }
+              >
+                <Text style={[S.body, { color: C.green, fontWeight: '800' }]}>
+                  ARB {(arb.profitPct * 100).toFixed(2)}% (saved pull)
+                </Text>
+                <Text style={[S.body, { marginTop: 4 }]}>
+                  Back {s.homeTeam} @ {arb.home.price.toFixed(2)} ({arb.home.bookTitle}) + Back{' '}
+                  {s.awayTeam} @ {arb.away.price.toFixed(2)} ({arb.away.bookTitle})
+                </Text>
+                <Text style={[S.faint, { marginTop: 4 }]}>
+                  Computed from this saved pull — prices may have moved. Tap to load into the arb
+                  calculator ↓
+                </Text>
+              </Pressable>
+            );
+          })()}
         </View>
       ))}
+    </View>
+  );
+}
+
+/** Prefill for the arb calculator: one arb pair's odds + book names. */
+export interface ArbPrefill {
+  priceA: number;
+  priceB: number;
+  bookA: string;
+  bookB: string;
+  matchup: string;
+}
+
+/**
+ * Interactive 2-way arb calculator (planning tool only). Manual inputs:
+ * odds per side (decimal or American, auto-detected like Kelly), total
+ * stake, optional book-name labels. Outputs: arb % (or "No arb" with the
+ * combined implied probability), the equal-payout stake split, guaranteed
+ * profit, and ROI %. Places no bets, never hands off to Kelly, never
+ * touches saved pulls. Tapping an arb row in the saved-pull banner prefills
+ * it via the `prefill` prop.
+ */
+function ArbCalculator({ prefill }: { prefill: ArbPrefill | null }) {
+  // Inputs initialize from the prefill (if any). The parent remounts this
+  // component via `key` on every arb-row tap, so these initializers re-run
+  // with the new prefill; user edits between taps are preserved.
+  const [oddsA, setOddsA] = useState(prefill ? prefill.priceA.toFixed(2) : '');
+  const [oddsB, setOddsB] = useState(prefill ? prefill.priceB.toFixed(2) : '');
+  const [stakeText, setStakeText] = useState('100');
+  const [bookA, setBookA] = useState(prefill ? prefill.bookA : '');
+  const [bookB, setBookB] = useState(prefill ? prefill.bookB : '');
+  const [prefillNote] = useState(prefill ? `Loaded from saved pull: ${prefill.matchup}` : '');
+
+  const parsedA = useMemo(() => parseOddsInput(oddsA), [oddsA]);
+  const parsedB = useMemo(() => parseOddsInput(oddsB), [oddsB]);
+  const total = parseFloat(stakeText.replace(',', '.'));
+  const totalOk = Number.isFinite(total) && total > 0;
+
+  const inv = parsedA && parsedB ? 1 / parsedA.decimal + 1 / parsedB.decimal : null;
+  const arbPct = inv !== null && inv < 1 ? 1 - inv : null;
+  const split =
+    arbPct !== null && parsedA && parsedB && totalOk
+      ? splitStake(total, parsedA.decimal, parsedB.decimal)
+      : null;
+  const profit = arbPct !== null && totalOk ? total * arbPct : null;
+
+  const fmtAmerican = (american: number) => (american > 0 ? `+${american}` : `${american}`);
+  const labelA = bookA.trim() || 'Outcome A';
+  const labelB = bookB.trim() || 'Outcome B';
+
+  return (
+    <View style={S.card}>
+      <Text style={S.label}>Arb calculator</Text>
+      <Text style={[S.dim, { marginTop: 4 }]}>
+        2-way only. Enter odds as decimal (1.85) or American (-122 / +183) — auto-detected.
+        Planning tool only: places no bets.
+      </Text>
+      {prefillNote !== '' && (
+        <Text style={[S.body, { color: C.green, marginTop: 6 }]}>{prefillNote}</Text>
+      )}
+      <Text style={[S.label, { marginTop: 10 }]}>Odds — outcome A</Text>
+      <TextInput
+        style={[S.input, { marginBottom: 10 }]}
+        placeholder="e.g. 2.10 or +110"
+        placeholderTextColor={C.faint}
+        keyboardType="numbers-and-punctuation"
+        autoCapitalize="none"
+        autoCorrect={false}
+        value={oddsA}
+        onChangeText={setOddsA}
+      />
+      <Text style={S.label}>Odds — outcome B</Text>
+      <TextInput
+        style={[S.input, { marginBottom: 10 }]}
+        placeholder="e.g. 1.95 or -105"
+        placeholderTextColor={C.faint}
+        keyboardType="numbers-and-punctuation"
+        autoCapitalize="none"
+        autoCorrect={false}
+        value={oddsB}
+        onChangeText={setOddsB}
+      />
+      <Text style={S.label}>Total stake ($)</Text>
+      <TextInput
+        style={[S.input, { marginBottom: 10 }]}
+        placeholder="e.g. 100"
+        placeholderTextColor={C.faint}
+        keyboardType="decimal-pad"
+        value={stakeText}
+        onChangeText={setStakeText}
+      />
+      <Text style={S.label}>Book for A (optional)</Text>
+      <TextInput
+        style={[S.input, { marginBottom: 10 }]}
+        placeholder="e.g. Pinnacle"
+        placeholderTextColor={C.faint}
+        autoCapitalize="none"
+        autoCorrect={false}
+        value={bookA}
+        onChangeText={setBookA}
+      />
+      <Text style={S.label}>Book for B (optional)</Text>
+      <TextInput
+        style={[S.input, { marginBottom: 10 }]}
+        placeholder="e.g. bet365"
+        placeholderTextColor={C.faint}
+        autoCapitalize="none"
+        autoCorrect={false}
+        value={bookB}
+        onChangeText={setBookB}
+      />
+      {(!parsedA || !parsedB) ? (
+        <Text style={S.dim}>Enter valid odds for both sides to see the arb math.</Text>
+      ) : !totalOk ? (
+        <Text style={S.dim}>Enter a total stake above 0 to split it.</Text>
+      ) : arbPct === null ? (
+        <Text style={[S.body, { color: C.amber }]}>
+          No arb — combined implied probability {((inv as number) * 100).toFixed(1)}%.
+        </Text>
+      ) : split && profit !== null ? (
+        <>
+          <Text style={[S.body, { color: C.green, fontWeight: '800', marginBottom: 6 }]}>
+            ARB {(arbPct * 100).toFixed(2)}%
+          </Text>
+          <Text style={[S.dim, { marginBottom: 8 }]}>
+            Odds A {parsedA.decimal.toFixed(2)} ({fmtAmerican(parsedA.american)}) · Odds B{' '}
+            {parsedB.decimal.toFixed(2)} ({fmtAmerican(parsedB.american)})
+          </Text>
+          <View style={[S.row, { justifyContent: 'space-between', marginBottom: 4 }]}>
+            <Text style={S.body}>
+              ${split.stakeA.toFixed(2)} on {labelA}
+            </Text>
+            <Text style={S.dim}>{parsedA.decimal.toFixed(2)}</Text>
+          </View>
+          <View style={[S.row, { justifyContent: 'space-between', marginBottom: 8 }]}>
+            <Text style={S.body}>
+              ${split.stakeB.toFixed(2)} on {labelB}
+            </Text>
+            <Text style={S.dim}>{parsedB.decimal.toFixed(2)}</Text>
+          </View>
+          <Text style={[S.body, { color: C.green, fontWeight: '700' }]}>
+            Guaranteed profit: ${profit.toFixed(2)} (ROI {(arbPct * 100).toFixed(2)}%) — same
+            whichever side wins
+          </Text>
+        </>
+      ) : null}
+      <Text style={[S.faint, { marginTop: 8 }]}>⚠️ {ARB_CAVEAT}</Text>
     </View>
   );
 }

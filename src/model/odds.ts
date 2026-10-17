@@ -286,10 +286,7 @@ export function bestPrices(books: BookmakerOdds[]): { home: ArbLeg | null; away:
  */
 export function detectArb(books: BookmakerOdds[]): ArbOpportunity | null {
   const { home, away } = bestPrices(books);
-  if (!home || !away) return null;
-  const inv = 1 / home.price + 1 / away.price;
-  if (!(inv < 1)) return null;
-  return { home, away, profitPct: 1 - inv };
+  return arbFromBestLegs(home, away);
 }
 
 /**
@@ -306,7 +303,28 @@ export function splitStake(total: number, priceA: number, priceB: number): { sta
 
 export const ARB_CAVEAT =
   'Arb windows close in seconds and books may void palpable-error lines — ' +
-  'confirm both legs are actually placed at these prices before counting the profit.';
+  'confirm both legs are actually placed at these prices before counting the profit';
+
+/**
+ * Arb alert bar: the saved-pull banner only surfaces arbs at or above this
+ * guaranteed-profit fraction (1%). Matches the edge-watch arb alert bar.
+ */
+export const ARB_ALERT_BAR = 0.01;
+
+/**
+ * Arbitrage from the two best legs, however they were obtained (live board
+ * or a saved pull's best legs). An arb exists when 1/bestA + 1/bestB < 1;
+ * the profit is locked regardless of outcome IF both legs get placed at the
+ * quoted prices. Returns null when there is no arb. Single source of the
+ * arb-existence / profit formula — detectArb and the saved-pull banner
+ * both go through here.
+ */
+export function arbFromBestLegs(home: ArbLeg | null, away: ArbLeg | null): ArbOpportunity | null {
+  if (!home || !away) return null;
+  const inv = 1 / home.price + 1 / away.price;
+  if (!(inv < 1)) return null;
+  return { home, away, profitPct: 1 - inv };
+}
 
 /* ------------------------- test helper ------------------------- */
 
