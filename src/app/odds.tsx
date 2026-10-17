@@ -29,6 +29,48 @@ function fmtTime(iso: string): string {
   });
 }
 
+/** Absolute pull timestamp, always America/Toronto: "Fri, Oct 17, 1:32 PM EDT". */
+function fmtPullTime(iso: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-US', {
+    timeZone: 'America/Toronto',
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+  });
+}
+
+/** Relative age: "just now" / "32 min ago" / "3 hr 12 min ago" / "2 days ago". */
+function relativeAge(iso: string, now: number): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '';
+  const diffMs = now - t;
+  if (diffMs < 0) return 'just now';
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) {
+    const rem = mins % 60;
+    return rem === 0 ? `${hrs} hr ago` : `${hrs} hr ${rem} min ago`;
+  }
+  const days = Math.floor(hrs / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+/**
+ * The most recent saved pull: all snapshots sharing the latest ts. One pull
+ * writes one snapshot per event with a single shared ts (see buildSnapshots),
+ * so grouping by ts recovers exactly that pull's rows.
+ */
+function lastPullSnapshots(history: OddsSnapshot[]): OddsSnapshot[] | null {
+  if (history.length === 0) return null;
+  let latest = history[0].ts;
+  for (const s of history) if (s.ts > latest) latest = s.ts;
+  return history.filter((s) => s.ts === latest);
+}
+
 export default function OddsScreen() {
   const { setResult, setKellySide, setOddsText, setPinBlue, setPinRed, setProbMode, calibrationMode, oddsEvents: events, setOddsEvents: setEvents } = usePrediction();
   const [keyReady, setKeyReady] = useState<boolean | null>(null); // null = checking
@@ -40,6 +82,8 @@ export default function OddsScreen() {
   const [allBooks, setAllBooks] = useState<{ key: string; title: string }[]>([]);
   const [bookSearch, setBookSearch] = useState('');
   const [history, setHistory] = useState<OddsSnapshot[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [now, setNow] = useState(() => Date.now()); // ticks every 60s so the relative age stays fresh
   const [source, setSource] = useState<'oddsapi' | 'oddspapi' | 'both'>('both');
   const [papiKeyReady, setPapiKeyReady] = useState<boolean | null>(null); // null = checking
   const [papiKeyInput, setPapiKeyInput] = useState('');
@@ -63,7 +107,13 @@ export default function OddsScreen() {
       }
       setPapiKeyReady(!!pk);
       setHistory(h);
+      setHistoryLoaded(true);
     })();
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(id);
   }, []);
 
   const saveKey = useCallback(async () => {
@@ -191,6 +241,10 @@ export default function OddsScreen() {
     return map;
   }, [allBooks]);
 
+  // Saved snapshots store best-leg book keys only (no titles) — resolve via
+  // the book catalog, falling back to the raw key when unknown.
+  const titleOf = useCallback((key: string) => titleMap.get(key) ?? key, [titleMap]);
+
   const bookCandidates = useMemo(() => {
     const q = bookSearch.trim().toLowerCase();
     if (!q) return [];
@@ -202,6 +256,8 @@ export default function OddsScreen() {
   }, [bookSearch, myBooks, titleMap]);
 
   const bookStats = useMemo(() => computeBookStats(history), [history]);
+
+  const lastPull = useMemo(() => lastPullSnapshots(history), [history]);
 
   const arbPairs = useMemo(
     () => computeArbPairs(history).filter((p) => p.arbCount > 0).slice(0, 5),
@@ -254,6 +310,9 @@ export default function OddsScreen() {
           Live moneyline odds for League of Legends, merged across The Odds API and OddsPapi.
           Refresh is manual — each tap costs requests from your monthly quotas.
         </Text>
+
+        {/* -------- last saved pull: prominent, always visible -------- */}
+        <LastPullBanner snapshots={lastPull} now={now} loaded={historyLoaded} titleOf={titleOf} />
 
         {/* -------- source -------- */}
         <View style={S.card}>
@@ -481,6 +540,94 @@ export default function OddsScreen() {
         )}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+/**
+ * Prominent banner for the most recent SAVED pull (AsyncStorage
+ * `odds_history_v1`, OddsPapi only — The Odds API pulls are never saved).
+ * Shows the pull's timestamp (absolute + relative age, staleness never
+ * hidden) and that pull's actual saved odds rows. Read-only: saved prices
+ * are stale by definition, so rows never hand off to Kelly.
+ */
+function LastPullBanner({
+  snapshots,
+  now,
+  loaded,
+  titleOf,
+}: {
+  snapshots: OddsSnapshot[] | null;
+  now: number;
+  loaded: boolean;
+  titleOf: (key: string) => string;
+}) {
+  if (!loaded) return null;
+  if (!snapshots || snapshots.length === 0) {
+    return (
+      <View style={S.card}>
+        <Text style={S.label}>Last saved pull</Text>
+        <Text style={[S.body, { marginTop: 6 }]}>No odds pulled yet — pull odds to see them here.</Text>
+        <Text style={[S.dim, { marginTop: 4 }]}>
+          Saved pulls appear here after a successful OddsPapi refresh.
+        </Text>
+      </View>
+    );
+  }
+  const ts = snapshots[0].ts;
+  const pulled = new Date(ts).getTime();
+  const ageMs = now - pulled;
+  // 0 = fresh (<1h), 1 = aging (1–24h), 2 = stale (>24h). NaN timestamp counts as stale.
+  const staleLevel = Number.isNaN(pulled) ? 2 : ageMs < 3600000 ? 0 : ageMs < 86400000 ? 1 : 2;
+  const ageColor = staleLevel === 0 ? C.green : staleLevel === 1 ? C.amber : C.red;
+  return (
+    <View style={[S.card, { borderColor: ageColor }]}>
+      <View style={[S.row, { justifyContent: 'space-between' }]}>
+        <Text style={S.label}>Last saved pull</Text>
+        <Text style={S.faint}>Saved pull — not live data</Text>
+      </View>
+      <Text style={[S.body, { fontSize: 16, fontWeight: '700', marginTop: 6 }]}>
+        Last pulled: {fmtPullTime(ts)} <Text style={{ color: ageColor }}>({relativeAge(ts, now)})</Text>
+      </Text>
+      {staleLevel === 1 && (
+        <Text style={[S.dim, { marginTop: 4 }]}>Prices may have moved — refresh before betting.</Text>
+      )}
+      {staleLevel === 2 && (
+        <Text style={[S.body, { color: C.red, marginTop: 4 }]}>
+          Stale — these prices are over a day old. Refresh before betting.
+        </Text>
+      )}
+      <Text style={[S.dim, { marginTop: 8 }]}>
+        {snapshots.length} game{snapshots.length === 1 ? '' : 's'} · OddsPapi pull
+      </Text>
+      {snapshots.map((s) => (
+        <View key={s.eventId} style={{ marginTop: 10 }}>
+          <Text style={[S.body, { fontWeight: '700' }]}>
+            {s.homeTeam} <Text style={S.faint}>vs</Text> {s.awayTeam}
+          </Text>
+          <Text style={S.faint}>{fmtTime(s.commenceTime)}</Text>
+          {s.books.map((b) => (
+            <View key={b.key} style={[styles.row, { paddingVertical: 4 }]}>
+              <Text style={[S.body, { flex: 1.4, fontSize: 13 }]} numberOfLines={1}>
+                {b.title}
+              </Text>
+              <Text style={[S.body, { flex: 1, textAlign: 'center', fontSize: 13 }]}>
+                {b.home !== null ? b.home.toFixed(2) : '–'}
+              </Text>
+              <Text style={[S.body, { flex: 1, textAlign: 'center', fontSize: 13 }]}>
+                {b.away !== null ? b.away.toFixed(2) : '–'}
+              </Text>
+            </View>
+          ))}
+          {(s.bestHome || s.bestAway) && (
+            <Text style={[S.dim, { marginTop: 4 }]}>
+              Best: {s.bestHome ? `${s.bestHome.price.toFixed(2)} ${s.homeTeam} @ ${titleOf(s.bestHome.bookKey)}` : '–'}
+              {' · '}
+              {s.bestAway ? `${s.bestAway.price.toFixed(2)} ${s.awayTeam} @ ${titleOf(s.bestAway.bookKey)}` : '–'}
+            </Text>
+          )}
+        </View>
+      ))}
+    </View>
   );
 }
 
