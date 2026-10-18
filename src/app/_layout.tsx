@@ -51,7 +51,7 @@ export default function RootLayout() {
         <Tabs.Screen
           name="parlay"
           options={{
-            title: 'Parlay',
+            title: 'Derivatives',
             tabBarIcon: ({ focused }) => <TabIcon label="🧩" focused={focused} />,
           }}
         />

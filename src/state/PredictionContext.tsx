@@ -34,7 +34,7 @@ interface PredictionState {
   setPinBlue: (n: number | null) => void;
   pinRed: number | null;
   setPinRed: (n: number | null) => void;
-  /** Last odds fetch from the Odds tab, shared so the Parlay tab can build legs from it. */
+  /** Last odds fetch from the Odds tab, shared so the Derivatives tab can build legs from it. */
   oddsEvents: OddsEvent[];
   setOddsEvents: (e: OddsEvent[]) => void;
 }
