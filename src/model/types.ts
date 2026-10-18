@@ -55,6 +55,8 @@ export interface TeamRecord {
   turnover_2025_2026: number | null;
   roster_2025: string[];
   roster_2026: string[];
+  /** v1.4.0+: league region (e.g. 'EMEA', 'Vietnam') for region offsets. */
+  region?: string;
 }
 
 export interface CalibrationBin {
@@ -72,6 +74,8 @@ export interface Artifacts {
   models: { full: ModelJson; nodraft: ModelJson };
   /** v1.3+: per-bucket live in-game models, keyed "10" | "15" | "20" | "25". */
   live_models?: Record<string, LiveModelJson>;
+  /** v1.4.0+: region strength offsets (Elo pts). Absent on <=1.3.3 artifacts. */
+  region_offsets?: { offsets_elo: Record<string, number>; note?: string };
   blue_edge: number;
   teams: Record<string, TeamRecord>;
   team_aliases: Record<string, string>;

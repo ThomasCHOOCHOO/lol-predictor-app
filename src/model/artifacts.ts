@@ -46,6 +46,9 @@ export const LIVE_MODELS: Record<string, LiveModelJson> | undefined = A.live_mod
   | Record<string, LiveModelJson>
   | undefined;
 
+/** v1.4.0+: region strength offsets (Elo pts) by team region. Empty on <=1.3.3 artifacts. */
+export const REGION_OFFSETS: Record<string, number> = A.region_offsets?.offsets_elo ?? {};
+
 /* ---------------- calibration toggle (v1.4.0 Phase 1, Wave 2) ---------------- */
 
 /** Honest maps + honest-vs-shipped numbers, bundled from

@@ -2,6 +2,7 @@ import {
   BLUE_EDGE,
   COMFORT,
   MODELS,
+  REGION_OFFSETS,
   TEAMS,
   calibrationFor,
   championPower,
@@ -51,6 +52,9 @@ export function isotonicCalibrate(pRaw: number, cal: CalibrationMap): number {
 /**
  * Feature math mirrors src/predict.py::predict_game + draft_features exactly:
  *   elo_diff    = elo(blue) - elo(red)
+ *   elo_diff_adj = elo_diff + off[region(blue)] - off[region(red)] (v1.4.0+;
+ *     models trained on the adjusted diff; unknown region -> offset 0.
+ *     Pre-1.4.0 artifacts list 'elo_diff' and ignore the adjusted key.)
  *   eg_gold_diff = eg_gold(blue) - eg_gold(red)  (v1.3.0+; replaces form_diff)
  *   blue_edge   = trailing-90d global blue-side win rate (constant in artifact)
  *   d_power     = sum(power(blue picks)) - sum(power(red picks))
@@ -74,8 +78,13 @@ export function computeFeatures(
   const fb = tb ? tb.form : 0.5; // comfort fallback only (not a model feature)
   const fr = tr ? tr.form : 0.5;
 
+  // v1.4.0+: region-offset-adjusted Elo diff (mirrors Python elo_diff_adj).
+  const offB = REGION_OFFSETS[tb?.region ?? ''] ?? 0;
+  const offR = REGION_OFFSETS[tr?.region ?? ''] ?? 0;
+
   const feats: Record<string, number> = {
     elo_diff: eb - er,
+    elo_diff_adj: eb - er + offB - offR,
     eg_gold_diff: gb - gr,
     blue_edge: BLUE_EDGE,
   };
