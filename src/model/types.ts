@@ -1,7 +1,7 @@
 /** Types mirroring model/phone_artifacts.json (model_version 1.x, read dynamically). */
 
 /** Calibration map selector (v1.4.0 Phase 1, Wave 2 — Model tab toggle).
- *  'standard' = shipped v1.3.2 map (fit on the Jul–Oct tail, graded on those
+ *  'standard' = shipped map of the current artifact version (fit on the Jul–Oct tail, graded on those
  *  same games — its ~0 ECE is in-sample, not quality). 'honest' = map fit on
  *  Jul–Aug only, graded on untouched Sep games. Same model, same features —
  *  only the final raw-score → probability mapping changes. */

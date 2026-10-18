@@ -30,7 +30,7 @@ export default function InfoScreen() {
         <View style={S.card}>
           <Text style={S.h2}>Calibration</Text>
           <Text style={S.dim}>
-            Active model: <Text style={[S.body, { fontWeight: '700' }]}>{calibrationMode === 'honest' ? 'Honest calibration' : 'Standard (v1.3.2)'}</Text>
+            Active model: <Text style={[S.body, { fontWeight: '700' }]}>{calibrationMode === 'honest' ? 'Honest calibration' : `Standard (v${MODEL_VERSION})`}</Text>
           </Text>
           <View style={styles.segment}>
             {(['standard', 'honest'] as CalibrationMode[]).map((m) => (
@@ -40,7 +40,7 @@ export default function InfoScreen() {
                 onPress={() => setCalibrationMode(m)}
               >
                 <Text style={[styles.segText, calibrationMode === m && styles.segTextActive]}>
-                  {m === 'standard' ? 'Standard (v1.3.2)' : 'Honest'}
+                  {m === 'standard' ? `Standard (v${MODEL_VERSION})` : 'Honest'}
                 </Text>
               </Pressable>
             ))}

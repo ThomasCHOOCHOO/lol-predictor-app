@@ -2,6 +2,7 @@ import { router } from 'expo-router';
 import React, { useMemo } from 'react';
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { KELLY_CAVEAT, agreementAdjust, binNForP, fmtMoney, fmtPct, kelly, parseOddsInput, recommendKelly } from '../model/kelly';
+import { MODEL_VERSION } from '../model/artifacts';
 import { seriesConversion } from '../model/predict';
 import { usePrediction, type KellySide } from '../state/PredictionContext';
 import { C, S } from '../theme';
@@ -104,7 +105,7 @@ export default function KellyScreen() {
                 </Text>
               )}
               <Text style={[S.faint, { marginBottom: 12 }]}>
-                Calibration: {result.calibration === 'honest' ? 'Honest' : 'Standard (v1.3.2)'} — switch in the Model tab.
+                Calibration: {result.calibration === 'honest' ? 'Honest' : `Standard (v${MODEL_VERSION})`} — switch in the Model tab.
               </Text>
               <Text style={S.label}>Odds (your book) — decimal or American</Text>
               <TextInput

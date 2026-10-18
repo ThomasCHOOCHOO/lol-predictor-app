@@ -6,6 +6,7 @@ import {
   CALIBRATION_TABLE,
   CURRENT_PATCH,
   METRICS,
+  MODEL_VERSION,
   PATCHES,
   PATCH_AWARE,
   PLAYER_GAPS,
@@ -282,7 +283,7 @@ export default function PredictScreen() {
             </View>
             <ProbBar pBlue={displayP} blue={result.blue} red={result.red} />
             <Text style={[S.faint, { marginTop: 6 }]}>
-              Calibration: {result.calibration === 'honest' ? 'Honest (fit Jul–Aug, graded on untouched Sep games)' : 'Standard (v1.3.2 shipped)'} — switch in the Model tab.
+              Calibration: {result.calibration === 'honest' ? 'Honest (fit Jul–Aug, graded on untouched Sep games)' : `Standard (v${MODEL_VERSION} shipped)`} — switch in the Model tab.
             </Text>
             {gapFlags.map(({ team, gap }) => (
               <View key={team} style={[styles.noteBox, { borderColor: C.amber }]}>
