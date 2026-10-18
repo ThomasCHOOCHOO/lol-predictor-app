@@ -52,8 +52,8 @@ export const REGION_OFFSETS: Record<string, number> = A.region_offsets?.offsets_
 /* ---------------- calibration toggle (v1.4.0 Phase 1, Wave 2) ---------------- */
 
 /** Honest maps + honest-vs-shipped numbers, bundled from
- *  scripts/build_wave2_data.py (built from the v1.3.2 bundle, matching the
- *  shipped artifact). Prefer the artifact's own calibration_honest when a
+ *  the 1.4.0 model (regenerated from model.joblib via
+ *  honest_map_from_bundle). Prefer the artifact's own calibration_honest when a
  *  future artifact carries it; fall back to the bundled file. */
 const HONEST_BUNDLED = honestRaw as unknown as Record<'full' | 'nodraft', HonestCalibrationEntry>;
 

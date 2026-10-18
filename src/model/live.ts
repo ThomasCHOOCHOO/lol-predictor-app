@@ -10,6 +10,10 @@ import type { SeriesState } from './seriesState';
  * Per-bucket logistic regression on [pre_logit, golddiff_k, killdiff]
  * (no scaler — raw features), then the bucket's isotonic calibration map.
  * Buckets: 10 / 15 / 20 / 25 minutes; below 10 min use the pre-game model.
+ *
+ * NOTE: golddiff_k was 2x the true team gold diff at TRAIN time (see the
+ * 2x comment in liveProba); liveProba doubles the served 1x diff to match.
+ * Variant A (liveProbaA) uses per-role gold, counted correctly — never doubled.
  */
 
 export const LIVE_BUCKETS = [10, 15, 20, 25] as const;
@@ -34,7 +38,13 @@ export interface LiveFeatures {
 export function liveProba(f: LiveFeatures, bucket: number): { pRaw: number; pCal: number } | null {
   const m: LiveModelJson | undefined = LIVE_MODELS?.[String(bucket)];
   if (!m || m.features.length !== 3) return null;
-  const x = [f.preLogit, f.goldDiffK, f.killDiff];
+  // 2x serve-time correction: the live model was TRAINED on golddiff_k = 2x
+  // the true team gold diff (the training script summed the `team` row, whose
+  // gold already equals the five players, plus the five player rows). The app
+  // serves the true 1x diff, so double it here to match training. Displayed
+  // gold is untouched — only the model input is corrected. Variant A
+  // (liveProbaA) uses per-role gold, which was counted correctly — never double it.
+  const x = [f.preLogit, f.goldDiffK * 2, f.killDiff];
   let z = m.intercept;
   for (let i = 0; i < 3; i++) z += m.coef[i] * x[i];
   const pRaw = sigmoid(z);
