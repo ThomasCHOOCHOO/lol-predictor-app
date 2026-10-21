@@ -610,32 +610,45 @@ function ScreenshotOddsSection({
     [games, calibrationMode],
   );
 
-  const pickAndRead = async () => {
+  const pickAndRead = async (source: 'library' | 'camera') => {
     setShotError(null);
     try {
-      const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        base64: true,
-        quality: 1,
-      });
+      // On web, launchCameraAsync maps to a file input with
+      // capture="camera" — on a phone that opens the camera directly,
+      // on desktop it asks for the webcam. Library opens the file
+      // picker, which on iOS offers Photo Library / Take Photo / Files.
+      const res =
+        source === 'camera'
+          ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1 })
+          : await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ['images'],
+              base64: true,
+              quality: 1,
+            });
       if (res.canceled || !res.assets?.[0]) return;
       const asset = res.assets[0];
       setImageUri(asset.uri);
       if (Platform.OS !== 'web') {
         setShotError(
-          'OCR runs on the web version only — on the phone app, paste the odds text below (or add games by hand) and it still parses and prices them.',
+          'OCR runs on the web version only — open this site in your phone browser (not the Expo app) and pick the screenshot there. On the phone app, paste the odds text below (or add games by hand) and it still parses and prices them.',
         );
         return;
       }
-      if (!asset.base64) {
+      // On web, prefer the picker's blob URL over base64: a phone photo
+      // as base64 is a second multi-megabyte copy, and the OCR step
+      // loads a blob URL into a canvas just as well.
+      const input =
+        asset.uri ??
+        (asset.base64
+          ? `data:${asset.mimeType ?? 'image/png'};base64,${asset.base64}`
+          : null);
+      if (!input) {
         setShotError('Could not read that image — paste the odds text below instead.');
         return;
       }
       setOcrRunning(true);
       try {
-        const text = await ocrImageToText(
-          `data:${asset.mimeType ?? 'image/png'};base64,${asset.base64}`,
-        );
+        const text = await ocrImageToText(input);
         setOcrText(text);
         setGames(parseScreenshotOdds(text, book));
       } finally {
@@ -691,11 +704,31 @@ function ScreenshotOddsSection({
         value={book}
         onChangeText={setBook}
       />
-      <Pressable style={S.btn} onPress={() => void pickAndRead()} disabled={ocrRunning}>
-        <Text style={S.btnText}>
-          {ocrRunning ? 'Reading screenshot…' : 'Pick a screenshot'}
-        </Text>
-      </Pressable>
+      <Text style={[S.dim, { marginBottom: 8 }]}>
+        On your phone, open this site in Safari or Chrome — OCR does not work
+        in the Expo app (no WebAssembly there). A full board can take
+        ~20 seconds on a phone; keep the tab open while it reads. The first
+        use downloads the OCR language data (~3 MB), so it needs a connection
+        the first time, then it runs on-device.
+      </Text>
+      <View style={[S.row, { gap: 8 }]}>
+        <Pressable
+          style={[S.btn, { flex: 1 }]}
+          onPress={() => void pickAndRead('library')}
+          disabled={ocrRunning}
+        >
+          <Text style={S.btnText}>
+            {ocrRunning ? 'Reading screenshot…' : 'Pick a screenshot'}
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[S.btn, { flex: 1 }]}
+          onPress={() => void pickAndRead('camera')}
+          disabled={ocrRunning}
+        >
+          <Text style={S.btnText}>Take a photo</Text>
+        </Pressable>
+      </View>
       {imageUri && (
         <Image
           source={{ uri: imageUri }}

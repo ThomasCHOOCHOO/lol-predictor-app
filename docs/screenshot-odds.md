@@ -59,6 +59,25 @@ Esports; NO BET on Secret Whales vs LYON. Note the LØS verdict
 known weak-region-dominator inflation case, so treat that one as a
 model outlier to check, not a confident bet.
 
+## Phone web app (2026-10-20)
+
+OCR does NOT work in the Expo/native app — React Native has no
+WebAssembly for Tesseract. On a phone, open the GitHub Pages site in
+Safari or Chrome, go to the Odds tab, and use "Pick a screenshot"
+(library) or "Take a photo" (camera directly, via the file input's
+capture attribute on web).
+
+Phone-specific handling in the OCR path:
+- The picker blob URL is used directly for OCR instead of a base64
+  copy, so a large phone photo isn't duplicated in memory.
+- Images are resized into Tesseract's readable range before
+  recognition: < 900 px wide upscaled 2x, > 2000 px wide downscaled
+  to 2000 px, total pixels capped at ~6M so a tall full-board phone
+  shot doesn't blow up mobile Safari's OCR worker memory.
+- A full board can take ~20 seconds on a phone; the button shows
+  "Reading screenshot…" until it finishes. First use downloads the
+  OCR language data (~3–5 MB) and needs a connection.
+
 ## Limits
 
 - Only h2h series-winner odds are priced. Map, handicap, and totals
