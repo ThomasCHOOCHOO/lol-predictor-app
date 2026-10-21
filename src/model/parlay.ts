@@ -197,3 +197,102 @@ export const PARLAY_CAVEAT =
   'Parlay EV assumes legs are independent — true across matches, false within one. ' +
   'Cross-match rankings use model probabilities; same-match combos get structural notes only, never numbers. ' +
   'Parlays multiply variance: Kelly stakes shrink accordingly.';
+
+/* ------------------------- multi-game parlay ticket ------------------------- */
+
+/**
+ * One leg of a custom multi-game parlay. Unlike ParlayLeg.p (a per-map
+ * probability in the manual builder), `pSeries` is the SERIES probability
+ * for the picked side — side-averaged per-map prob converted with the
+ * binomial for the leg's best-of. Books price series, so a Bo3/Bo5 ticket
+ * must multiply series probabilities, not per-map ones: e.g. a 65% per-map
+ * edge is ~76% over a Bo5, not 65%.
+ *
+ * Only valid for legs from UNRELATED matches. Two legs from the same
+ * match must never go through here — use the joint simulation instead.
+ */
+export interface MultiGameLeg {
+  /** e.g. "T1 vs LØS". Distinct across legs. */
+  matchKey: string;
+  /** e.g. "T1 wins series". */
+  label: string;
+  /** Picked side (model team name). */
+  team: string;
+  opponent: string;
+  /** Series win probability for `team` (0–1, exclusive). */
+  pSeries: number;
+  /** Side-averaged per-map probability, for display. */
+  pMapNeutral: number;
+  bestOf: 1 | 3 | 5;
+  /** Decimal odds for this leg at the ticket's book. */
+  odds: number;
+}
+
+export interface MultiGameTicket {
+  legs: MultiGameLeg[];
+  /** Joint win probability under independence (product of series probs). */
+  P: number;
+  /** Ticket decimal odds (product of leg odds). */
+  D: number;
+  /** Fair ticket odds (1 / P). */
+  fair: number;
+  /** ROI per $1 staked: P*D - 1. Positive ⟺ the ticket has edge. */
+  ev: number;
+  /** Probability edge: P - 1/D. */
+  edge: number;
+  /** Full-Kelly fraction of bankroll: (P*D - 1) / (D - 1). */
+  fStar: number;
+  rec: KellyRecommendation;
+  /** EV > 0. */
+  value: boolean;
+  perLeg: { leg: MultiGameLeg; implied: number; roiEdge: number }[];
+}
+
+const validMultiLeg = (l: MultiGameLeg): boolean =>
+  Number.isFinite(l.pSeries) &&
+  l.pSeries > 0 &&
+  l.pSeries < 1 &&
+  Number.isFinite(l.odds) &&
+  l.odds > 1;
+
+/**
+ * Price one custom ticket from 2+ legs at a single book. Returns null when
+ * fewer than 2 valid legs, when two legs share a match, or when any leg is
+ * invalid — the UI then shows what's missing instead of a number.
+ */
+export function multiGameTicket(legs: MultiGameLeg[]): MultiGameTicket | null {
+  if (legs.length < 2) return null;
+  if (new Set(legs.map((l) => l.matchKey)).size !== legs.length) return null;
+  if (!legs.every(validMultiLeg)) return null;
+  const P = legs.reduce((a, l) => a * l.pSeries, 1);
+  const D = legs.reduce((a, l) => a * l.odds, 1);
+  const ev = P * D - 1;
+  const edge = P - 1 / D;
+  const fStar = D > 1 ? (P * D - 1) / (D - 1) : 0;
+  // Joint-P bin: a low joint P lands in a thin calibration bin, which
+  // correctly pushes the recommendation toward quarter Kelly — parlays
+  // multiply variance, so the adaptive rule is conservative here by design.
+  const rec = recommendKelly(edge, binNForP(P));
+  return {
+    legs,
+    P,
+    D,
+    fair: 1 / P,
+    ev,
+    edge,
+    fStar,
+    rec,
+    value: ev > 0,
+    perLeg: legs.map((leg) => ({
+      leg,
+      implied: 1 / leg.odds,
+      roiEdge: leg.pSeries * leg.odds - 1,
+    })),
+  };
+}
+
+export const MULTI_GAME_CAVEAT =
+  'Multi-game parlays multiply series probabilities — only valid across unrelated ' +
+  'matches. A ticket can be a loser even when every leg is a favourite, and a ' +
+  'winner even when every leg is an underdog: what matters is model P vs the ' +
+  'book price, leg by leg and on the ticket as a whole, not the win rate alone.';

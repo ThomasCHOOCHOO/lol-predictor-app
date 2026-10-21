@@ -3,13 +3,16 @@ import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View 
 import { fmtMoney, fmtPct, kelly, parseOddsInput, recommendKelly, decimalToAmerican } from '../model/kelly';
 import { bestPrices, mapOddsTeamName, type OddsEvent } from '../model/odds';
 import {
+  MULTI_GAME_CAVEAT,
   PARLAY_CAVEAT,
+  multiGameTicket,
   rankParlays,
   sameMatchNotes,
+  type MultiGameLeg,
   type ParlayCombo,
   type ParlayLeg,
 } from '../model/parlay';
-import { predictMatchup } from '../model/predict';
+import { predictMatchup, seriesConversion } from '../model/predict';
 import {
   PROPS,
   buildCandidates,
@@ -91,6 +94,129 @@ export default function DerivativesScreen() {
   const idRef = useRef(0);
   const nextId = () => `leg-${Date.now()}-${idRef.current++}`;
 
+  /* ---------------- multi-game parlay (unrelated games, one ticket) ---------------- */
+  // A leg's series probability is fixed at add time (side-averaged per-map
+  // prob -> binomial for its best-of). Odds stay editable per leg so a
+  // typo doesn't force deleting the leg, and so example matchups can be
+  // loaded before any book price is entered.
+  type MultiLegState = Omit<MultiGameLeg, 'odds'> & { id: string; book: string; odds: number | null };
+  const [multiLegs, setMultiLegs] = useState<MultiLegState[]>([]);
+  const [mTeamA, setMTeamA] = useState('');
+  const [mTeamB, setMTeamB] = useState('');
+  const [mSide, setMSide] = useState<'A' | 'B'>('A');
+  const [mBestOf, setMBestOf] = useState<1 | 3 | 5>(1);
+  const [mBook, setMBook] = useState('');
+  const [mOdds, setMOdds] = useState('');
+  const [multiError, setMultiError] = useState<string | null>(null);
+
+  const multiSameMatch = (a: string, b: string, legs: MultiLegState[]) =>
+    legs.some(
+      (l) =>
+        (l.team === a && l.opponent === b) || (l.team === b && l.opponent === a),
+    );
+
+  const buildMultiLeg = (
+    a: string,
+    b: string,
+    side: 'A' | 'B',
+    bestOf: 1 | 3 | 5,
+    book: string,
+    odds: number | null,
+  ): MultiLegState | null => {
+    const conv = seriesConversion(a, b, bestOf, calibrationMode);
+    const firstP = conv.pSeries;
+    const pSeries = side === 'A' ? firstP : 1 - firstP;
+    const pMap = side === 'A' ? conv.pNeutral : 1 - conv.pNeutral;
+    const team = side === 'A' ? a : b;
+    const opp = side === 'A' ? b : a;
+    return {
+      id: nextId(),
+      matchKey: `${a} vs ${b}`,
+      label: `${team} wins series`,
+      team,
+      opponent: opp,
+      pSeries,
+      pMapNeutral: pMap,
+      bestOf,
+      book: book.trim() || '—',
+      odds,
+    };
+  };
+
+  const addMultiLeg = () => {
+    const a = mapOddsTeamName(mTeamA.trim());
+    const b = mapOddsTeamName(mTeamB.trim());
+    if (!a || !b) {
+      setMultiError('Both teams must match model teams (check spelling).');
+      return;
+    }
+    if (a === b) {
+      setMultiError('Pick two different teams.');
+      return;
+    }
+    if (multiSameMatch(a, b, multiLegs)) {
+      setMultiError('That match is already in the ticket — one leg per match.');
+      return;
+    }
+    const parsed = parseOddsInput(mOdds);
+    if (!parsed) {
+      setMultiError('Enter decimal odds above 1.00 or American odds ±100+ for your side.');
+      return;
+    }
+    const leg = buildMultiLeg(a, b, mSide, mBestOf, mBook, parsed.decimal);
+    if (!leg) {
+      setMultiError('Could not price that matchup.');
+      return;
+    }
+    setMultiLegs((prev) => [...prev, leg]);
+    setMultiError(null);
+  };
+
+  // Example from Thomas: three unrelated Swiss matches, all Bo1. Sides default
+  // to the model favourite in each — change a side by deleting and re-adding
+  // that leg. Odds are left blank on purpose: no price is invented.
+  const loadMultiExample = () => {
+    const pairs: [string, string][] = [
+      ['T1', 'LOS'],
+      ['GenG', 'IG'],
+      ['BLG', 'KOI'],
+    ];
+    const fresh: MultiLegState[] = [];
+    for (const [rawA, rawB] of pairs) {
+      const a = mapOddsTeamName(rawA);
+      const b = mapOddsTeamName(rawB);
+      if (!a || !b || a === b || multiSameMatch(a, b, [...multiLegs, ...fresh])) continue;
+      const conv = seriesConversion(a, b, 1, calibrationMode);
+      const side: 'A' | 'B' = conv.pSeries >= 0.5 ? 'A' : 'B';
+      const leg = buildMultiLeg(a, b, side, 1, mBook, null);
+      if (leg) fresh.push(leg);
+    }
+    if (fresh.length === 0) {
+      setMultiError('Example matchups are already in the ticket.');
+      return;
+    }
+    setMultiLegs((prev) => [...prev, ...fresh]);
+    setMultiError(null);
+  };
+
+  const multiBooks = new Set(multiLegs.map((l) => l.book.toLowerCase()));
+  const multiBooksMatch = multiBooks.size <= 1;
+  const multiPricedLegs: MultiGameLeg[] | null =
+    multiLegs.length >= 2 && multiLegs.every((l) => l.odds !== null)
+      ? multiLegs.map((l) => ({
+          matchKey: l.matchKey,
+          label: l.label,
+          team: l.team,
+          opponent: l.opponent,
+          pSeries: l.pSeries,
+          pMapNeutral: l.pMapNeutral,
+          bestOf: l.bestOf,
+          odds: l.odds as number,
+        }))
+      : null;
+  const multiTicket =
+    multiPricedLegs && multiBooksMatch ? multiGameTicket(multiPricedLegs) : null;
+
   const ctxBank = parseFloat(bankrollText.replace(',', '.'));
   const localN = parseFloat(localBank.replace(',', '.'));
   const bankroll =
@@ -99,6 +225,10 @@ export default function DerivativesScreen() {
       : Number.isFinite(localN) && localN > 0
         ? localN
         : null;
+  const multiStake =
+    multiTicket && multiTicket.value && bankroll !== null
+      ? Math.max(0, multiTicket.fStar * multiTicket.rec.frac) * bankroll
+      : null;
 
   /* ---------------- matchup resolution + sim ---------------- */
   const modelA = matchA.trim() ? mapOddsTeamName(matchA.trim()) : null;
@@ -443,10 +573,10 @@ export default function DerivativesScreen() {
       <ScrollView contentContainerStyle={S.scroll} keyboardShouldPersistTaps="handled">
         <Text style={S.h1}>Derivatives</Text>
         <Text style={[S.dim, { marginBottom: 12 }]}>
-          Prop pricing, related (correlated) parlays, and independent parlays. A parlay is
-          one ticket at one book, so combos only mix legs from the same book. Same-game
-          legs correlate — the joint simulation prices them together instead of
-          multiplying independent probabilities.
+          Prop pricing, related (correlated) parlays, independent parlays, and custom
+          multi-game parlays. A parlay is one ticket at one book, so combos only mix legs
+          from the same book. Same-game legs correlate — the joint simulation prices
+          them together instead of multiplying independent probabilities.
         </Text>
 
         {/* -------- shared matchup -------- */}
@@ -932,6 +1062,201 @@ export default function DerivativesScreen() {
             ))}
           </View>
         )}
+
+        {/* -------- multi-game parlay (unrelated games, one ticket) -------- */}
+        <View style={S.card}>
+          <Text style={S.label}>Multi-game parlay — unrelated games</Text>
+          <Text style={[S.dim, { marginBottom: 8 }]}>
+            Price one ticket across several different matches (e.g. T1 vs LOS, GenG vs IG,
+            BLG vs KOI together). Legs must be from different matches and at one book —
+            a parlay is a single ticket. Each leg is priced on its SERIES probability
+            (side-averaged per-map prob, binomial for its best-of), not its per-map prob,
+            and the ticket multiplies those series probabilities — valid only because
+            the games are unrelated.
+          </Text>
+          <Text style={[S.dim, { marginBottom: 10 }]}>
+            Win rate is not the bet: a favourite can be a bad bet and an underdog a good
+            one. What matters is model P vs the book price, on every leg and on the ticket.
+          </Text>
+          <View style={[S.row, { gap: 8, marginBottom: 8 }]}>
+            <TextInput
+              style={[S.input, { flex: 1 }]}
+              placeholder="Team A"
+              placeholderTextColor={C.faint}
+              autoCapitalize="none"
+              value={mTeamA}
+              onChangeText={setMTeamA}
+            />
+            <TextInput
+              style={[S.input, { flex: 1 }]}
+              placeholder="Team B"
+              placeholderTextColor={C.faint}
+              autoCapitalize="none"
+              value={mTeamB}
+              onChangeText={setMTeamB}
+            />
+          </View>
+          <Text style={S.label}>Betting side</Text>
+          <View style={[styles.segRow, { marginBottom: 8 }]}>
+            {(['A', 'B'] as const).map((s) => (
+              <Pressable
+                key={s}
+                style={[S.chip, mSide === s && { backgroundColor: C.blue, borderColor: C.blue }]}
+                onPress={() => setMSide(s)}
+              >
+                <Text style={[S.chipText, mSide === s && { color: '#06121F' }]}>Team {s}</Text>
+              </Pressable>
+            ))}
+            {([1, 3, 5] as const).map((n) => (
+              <Pressable
+                key={n}
+                style={[S.chip, mBestOf === n && { backgroundColor: C.blue, borderColor: C.blue }]}
+                onPress={() => setMBestOf(n)}
+              >
+                <Text style={[S.chipText, mBestOf === n && { color: '#06121F' }]}>Bo{n}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <View style={[S.row, { gap: 8, marginBottom: 10 }]}>
+            <TextInput
+              style={[S.input, { flex: 1 }]}
+              placeholder="Book (e.g. Pinnacle)"
+              placeholderTextColor={C.faint}
+              value={mBook}
+              onChangeText={setMBook}
+            />
+            <TextInput
+              style={[S.input, { flex: 1 }]}
+              placeholder="Your odds (1.85 or -122)"
+              placeholderTextColor={C.faint}
+              keyboardType="numbers-and-punctuation"
+              autoCapitalize="none"
+              autoCorrect={false}
+              value={mOdds}
+              onChangeText={setMOdds}
+            />
+          </View>
+          <View style={[S.row, { gap: 8 }]}>
+            <Pressable style={[S.btn, { flex: 1 }]} onPress={addMultiLeg}>
+              <Text style={S.btnText}>Add leg to ticket</Text>
+            </Pressable>
+            <Pressable
+              style={[S.chip, { alignSelf: 'center' }]}
+              onPress={loadMultiExample}
+            >
+              <Text style={S.chipText}>Load T1/LOS + GenG/IG + BLG/KOI</Text>
+            </Pressable>
+          </View>
+          {multiError && (
+            <Text style={[S.body, { color: C.red, marginTop: 8 }]}>{multiError}</Text>
+          )}
+
+          {multiLegs.length > 0 && (
+            <View style={{ marginTop: 12 }}>
+              <View style={[S.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
+                <Text style={S.label}>Ticket legs ({multiLegs.length})</Text>
+                <Pressable style={S.chip} onPress={() => setMultiLegs([])}>
+                  <Text style={S.chipText}>Clear ticket</Text>
+                </Pressable>
+              </View>
+              {multiLegs.map((l) => (
+                <View key={l.id} style={styles.legRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={S.body}>
+                      {l.label} <Text style={S.dim}>(Bo{l.bestOf})</Text>
+                    </Text>
+                    <Text style={S.dim}>
+                      {l.matchKey} · {l.book} · model series {fmtPct(l.pSeries)}
+                      {' '}· per-map {fmtPct(l.pMapNeutral)} · fair {fmtOdds(1 / l.pSeries)}
+                    </Text>
+                  </View>
+                  <TextInput
+                    style={[S.input, { width: 92, marginRight: 8, paddingVertical: 6 }]}
+                    placeholder="Odds"
+                    placeholderTextColor={C.faint}
+                    keyboardType="numbers-and-punctuation"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    value={l.odds !== null ? String(l.odds) : ''}
+                    onChangeText={(t) => {
+                      const parsed = parseOddsInput(t);
+                      setMultiLegs((prev) =>
+                        prev.map((x) => (x.id === l.id ? { ...x, odds: parsed ? parsed.decimal : null } : x)),
+                      );
+                    }}
+                  />
+                  <Pressable
+                    style={S.chip}
+                    onPress={() => setMultiLegs((prev) => prev.filter((x) => x.id !== l.id))}
+                  >
+                    <Text style={S.chipText}>✕</Text>
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {multiLegs.length >= 2 && !multiBooksMatch && (
+            <Text style={[S.body, { color: C.amber, marginTop: 10 }]}>
+              Legs are at different books — a parlay is one ticket at one book, so the
+              ticket is not priced until every leg shares a book.
+            </Text>
+          )}
+          {multiLegs.length >= 2 && multiBooksMatch && !multiTicket && (
+            <Text style={[S.dim, { marginTop: 10 }]}>
+              Enter odds for every leg to price the ticket.
+            </Text>
+          )}
+          {multiTicket && (
+            <View style={[styles.adjBox, { marginTop: 12, borderColor: multiTicket.value ? C.green : C.border }]}>
+              <Text style={[S.body, { fontWeight: '800', marginBottom: 4 }]}>
+                Ticket: {multiLegs.map((l) => l.team).join(' × ')}
+              </Text>
+              <Text style={S.dim}>
+                Joint P {fmtPct(multiTicket.P)} · ticket odds {multiTicket.D.toFixed(2)}
+                {' '}({fmtAm(multiTicket.D)}) · fair {fmtOdds(multiTicket.fair)}
+              </Text>
+              <Text style={S.body}>
+                EV{' '}
+                <Text style={{ color: multiTicket.ev > 0 ? C.green : C.text, fontWeight: '700' }}>
+                  {multiTicket.ev > 0 ? '+' : ''}
+                  {fmtMoney(multiTicket.ev)}
+                </Text>{' '}
+                per $1 · edge {fmtPct(multiTicket.edge)} · ROI edge{' '}
+                {fmtPct(multiTicket.ev)}
+              </Text>
+              {multiTicket.value ? (
+                <Text style={S.dim}>
+                  {multiTicket.rec.label} ({(multiTicket.rec.frac * 100).toFixed(0)}%)
+                  {multiStake !== null ? (
+                    <>
+                      {' '}→ <Text style={[S.body, { fontWeight: '700' }]}>{fmtMoney(multiStake)}</Text>
+                    </>
+                  ) : (
+                    ' — enter a bankroll for $ stakes'
+                  )}
+                </Text>
+              ) : (
+                <Text style={S.faint}>
+                  Negative EV — no Kelly stake. Every leg being a favourite does not make
+                  the ticket value; the price has to beat the joint probability.
+                </Text>
+              )}
+              <Text style={[S.label, { marginTop: 10 }]}>Per leg</Text>
+              {multiTicket.perLeg.map(({ leg, implied, roiEdge }) => (
+                <Text key={leg.matchKey} style={S.dim}>
+                  {leg.label}: model {fmtPct(leg.pSeries)} vs implied {fmtPct(implied)} ·{' '}
+                  ROI edge{' '}
+                  <Text style={{ color: roiEdge > 0 ? C.green : C.text, fontWeight: '700' }}>
+                    {roiEdge > 0 ? '+' : ''}
+                    {fmtPct(roiEdge)}
+                  </Text>
+                </Text>
+              ))}
+            </View>
+          )}
+          <Text style={[S.faint, { marginTop: 10 }]}>{MULTI_GAME_CAVEAT}</Text>
+        </View>
 
         {/* -------- manual leg entry -------- */}
         <View style={S.card}>

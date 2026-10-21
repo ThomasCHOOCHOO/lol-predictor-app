@@ -130,6 +130,31 @@ series winner, so its "correlation" is structural, not insight.
 - Header states: "Candidates with the model's numbers, NOT bet
   recommendations — you decide."
 
+## Multi-game parlay (unrelated games)
+
+The Derivatives tab also has a custom multi-game ticket builder, separate
+from the ranked 2-/3-leg combos. It prices one ticket across several
+different matches at one book (e.g. T1 vs LOS, GenG vs IG, BLG vs KOI).
+
+- Each leg uses its SERIES probability, not its per-map probability:
+  `seriesConversion` side-averages the per-map prob, then applies the
+  binomial for the leg's best-of (Bo1/3/5, chosen per leg). This is the
+  fix the manual builder lacks — it multiplies per-map probs, which
+  understates a favourite's series chance in a Bo3/Bo5.
+- Ticket math (`multiGameTicket` in `src/model/parlay.ts`): joint P is the
+  product of series probs, ticket odds D the product of leg odds, EV per $1
+  = P·D − 1, edge = P − 1/D, Kelly via the adaptive rule on the joint P
+  (a low joint P lands in a thin calibration bin, so the recommendation
+  skews to quarter Kelly — conservative by design).
+- Validity conditions, enforced in the UI: ≥ 2 legs, one leg per match,
+  all legs at the same book (different books → no price, with a warning),
+  odds on every leg (example matchups load with odds blank — no price is
+  invented). Per-leg ROI edge (p·odds − 1) is shown alongside the ticket
+  so a ticket carried by one leg is visible.
+- Independence is the load-bearing assumption: it holds across unrelated
+  matches and fails within one match. Same-match legs must use the joint
+  simulation, never this builder.
+
 ## Limitations
 
 - First blood is a marginal ship (+0.0025, gate cleared by 0.0005) —
