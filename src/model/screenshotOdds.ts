@@ -93,10 +93,27 @@ const TEAM_CANDIDATES: { key: string; normKey: string; model: string }[] = (() =
   const map = new Map<string, string>();
   for (const [alias, model] of Object.entries(TEAM_ALIASES)) map.set(alias.toLowerCase(), model);
   for (const name of Object.keys(TEAMS)) map.set(name.toLowerCase(), name);
+  // Book-board truncations the artifact aliases don't cover. "Liquid" on a
+  // board is Team Liquid; "KOI" alone is Movistar KOI in a Worlds board.
+  // Kept parser-local (not in the artifact) so a future artifact refresh
+  // can't silently change screenshot matching.
+  if (!map.has('liquid')) map.set('liquid', 'Team Liquid');
+  if (!map.has('koi')) map.set('koi', 'Movistar KOI');
   const out = [...map.entries()].map(([key, model]) => ({ key, normKey: norm(key), model }));
   out.sort((a, b) => b.key.length - a.key.length);
   return out;
 })();
+
+/** Normalize OCR punctuation so matching isn't fooled by it: curly
+ *  apostrophes (Anyone's), em/en dashes, and a space after a sign (- 417). */
+function cleanLine(line: string): string {
+  return line
+    .replace(/[’‘]/g, "'")
+    .replace(/[–—]/g, '-')
+    .replace(/([+-])\s+(\d)/g, '$1$2')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 /** Map one OCR team string to a model team, or null. Tries exact, then normalized, then substring. */
 export function mapScreenshotTeam(raw: string): string | null {
@@ -115,7 +132,8 @@ export function mapScreenshotTeam(raw: string): string | null {
 
 /** Find all team matches in one OCR line, longest-first, non-overlapping. */
 function teamsInLine(line: string): { model: string; raw: string; start: number; end: number }[] {
-  const lower = line.toLowerCase();
+  const cleaned = cleanLine(line);
+  const lower = cleaned.toLowerCase();
   const found: { model: string; raw: string; start: number; end: number }[] = [];
   const taken: [number, number][] = [];
   for (const c of TEAM_CANDIDATES) {
@@ -123,7 +141,7 @@ function teamsInLine(line: string): { model: string; raw: string; start: number;
     if (idx === -1) continue;
     if (taken.some(([s, e]) => idx < e && idx + c.key.length > s)) continue;
     taken.push([idx, idx + c.key.length]);
-    found.push({ model: c.model, raw: line.slice(idx, idx + c.key.length), start: idx, end: idx + c.key.length });
+    found.push({ model: c.model, raw: cleaned.slice(idx, idx + c.key.length), start: idx, end: idx + c.key.length });
   }
   found.sort((a, b) => a.start - b.start);
   return found;
@@ -138,24 +156,28 @@ interface OddsToken {
 }
 
 function oddsInLine(line: string): OddsToken[] {
+  const cleaned = cleanLine(line);
   const out: OddsToken[] = [];
-  // American odds first (+150 / -122), then decimal (1.85). Decimal regex
-  // skips times (12:30) because it requires a '.' and no ':' nearby.
+  // American odds first (+150 / -122), then decimal (1.85 or 1,85).
+  // Decimal regex skips times (12:30) because it requires '.' or ','.
   const amRe = /[+-]\d{3,4}\b/g;
   let m: RegExpExecArray | null;
-  const amSpans: [number, number][] = [];
-  while ((m = amRe.exec(line)) !== null) {
+  const spans: [number, number][] = [];
+  while ((m = amRe.exec(cleaned)) !== null) {
     const d = americanToDecimal(parseInt(m[0], 10));
     if (d !== null) {
       out.push({ value: d, start: m.index, end: m.index + m[0].length });
-      amSpans.push([m.index, m.index + m[0].length]);
+      spans.push([m.index, m.index + m[0].length]);
     }
   }
-  const decRe = /\b\d{1,2}\.\d{1,2}\b/g;
-  while ((m = decRe.exec(line)) !== null) {
-    if (amSpans.some(([s, e]) => m!.index < e && m!.index + m![0].length > s)) continue;
-    const v = parseFloat(m[0]);
-    if (v >= 1.01 && v <= 50) out.push({ value: v, start: m.index, end: m.index + m[0].length });
+  const decRe = /\b\d{1,2}[.,]\d{1,2}\b/g;
+  while ((m = decRe.exec(cleaned)) !== null) {
+    if (spans.some(([s, e]) => m!.index < e && m!.index + m![0].length > s)) continue;
+    const v = parseFloat(m[0].replace(',', '.'));
+    if (v >= 1.01 && v <= 50) {
+      out.push({ value: v, start: m.index, end: m.index + m[0].length });
+      spans.push([m.index, m.index + m[0].length]);
+    }
   }
   out.sort((a, b) => a.start - b.start);
   return out;
@@ -164,60 +186,92 @@ function oddsInLine(line: string): OddsToken[] {
 /* ------------------------- parser ------------------------- */
 
 /**
- * Parse OCR text into games. Pairing rule: candidates (team + odds) are
- * consumed in reading order, two distinct teams per game. A team with no
- * odds on its line inherits the next odds-only line's first odds token.
- * A game with a missing team or missing odds is still returned (marked
- * low confidence, unpriced) so the user can fix it instead of it
- * silently vanishing.
+ * Parse OCR text into games. Board rules learned from a real Pinnacle
+ * Oct 23 board (2026-10-20):
+ * - Only "(Match)" rows are series prices. "(Map 1)" rows repeat the same
+ *   match at the same odds and are SKIPPED, or the board doubles.
+ * - Teams and odds may split across lines (team column, then odds
+ *   column) or arrive column-wise (all teams, then all odds). Teams
+ *   without odds queue up; odds-only lines drain that queue in order.
+ *   The old single-pending-team slot overwrote the first team when a
+ *   second team-only line arrived — the queue fixes that.
+ * - Extra odds tokens on a team line are discarded (they belong to
+ *   other markets on that row, e.g. handicap) rather than spilling
+ *   onto the next team.
+ * - Odds on a team line are assigned to pending teams first: Tesseract
+ *   puts both moneyline odds on the second team's line on this board,
+ *   so position-only pairing would shift every favourite's price onto
+ *   the underdog.
+ * - A game with a missing team or missing odds is still returned
+ *   (marked low confidence, unpriced) so the user can fix it instead
+ *   of it silently vanishing.
+ * - Duplicate team pairs are dropped (keep the first): a board that
+ *   repeats a match under a misread "(Map 1)" label still yields one row.
  */
 export function parseScreenshotOdds(text: string, book = ''): ScreenshotGame[] {
   const lines = text
     .split(/\r?\n/)
-    .map((l) => l.replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
+    .map((l) => cleanLine(l))
+    .filter(Boolean)
+    .filter((l) => {
+      const lower = l.toLowerCase();
+      // Map rows only — "(Map 1)", "Map 1", "Map1" (OCR may drop the paren).
+      return !lower.includes('(map') && !/\bmap\s*1\b/.test(lower) && !lower.includes('map1');
+    });
   interface Cand {
     model: string;
     raw: string;
     odds: number | null;
   }
   const cands: Cand[] = [];
-  let pendingTeam: { model: string; raw: string } | null = null;
+  const pendingTeams: { model: string; raw: string }[] = [];
   for (const line of lines) {
     const teams = teamsInLine(line);
     const odds = oddsInLine(line);
     if (teams.length === 0) {
-      // Odds-only line: give its first odds to a pending team, if any.
-      const pt = pendingTeam;
-      if (pt && odds.length > 0) {
-        cands.push({ model: pt.model, raw: pt.raw, odds: odds[0].value });
-        pendingTeam = null;
+      // Odds-only line: drain the pending-team queue in order.
+      for (const tok of odds) {
+        const team = pendingTeams.shift();
+        if (!team) break;
+        cands.push({ model: team.model, raw: team.raw, odds: tok.value });
       }
       continue;
     }
-    // Pair teams to odds in position order within the line. Plain for-loop
-    // (not forEach): TS control-flow analysis loses track of pendingTeam
-    // when it is assigned inside a closure, narrowing it to never.
-    for (let ti = 0; ti < teams.length; ti++) {
-      const t = teams[ti];
-      const o = odds[ti]?.value ?? null;
-      if (o === null && ti === teams.length - 1) {
-        pendingTeam = { model: t.model, raw: t.raw };
-      } else {
-        cands.push({ model: t.model, raw: t.raw, odds: o });
-      }
+    // Odds on this line go to pending teams FIRST, then to teams on
+    // this line, in order. Real Tesseract output for a Pinnacle board
+    // puts both moneyline odds on the second team's line:
+    //   Gen.G (Match)
+    //   Invictus (Match) -417 +312
+    // Position-only pairing would give Invictus -417 (wrong). With a
+    // pending Gen.G, -417 -> Gen.G and +312 -> Invictus (right).
+    const recipients = [
+      ...pendingTeams,
+      ...teams.map((t) => ({ model: t.model, raw: t.raw })),
+    ];
+    pendingTeams.length = 0;
+    for (let ri = 0; ri < recipients.length; ri++) {
+      const r = recipients[ri];
+      const o = odds[ri]?.value ?? null;
+      if (o === null) pendingTeams.push(r);
+      else cands.push({ model: r.model, raw: r.raw, odds: o });
     }
   }
-  const ptEnd = pendingTeam;
-  if (ptEnd) cands.push({ model: ptEnd.model, raw: ptEnd.raw, odds: null });
+  for (const team of pendingTeams) cands.push({ model: team.model, raw: team.raw, odds: null });
 
   const games: ScreenshotGame[] = [];
+  const seenPairs = new Set<string>();
   let i = 0;
   let n = 0;
   while (i < cands.length) {
     const a = cands[i];
     const b = cands[i + 1];
     if (b && b.model !== a.model) {
+      const pairKey = [a.model, b.model].sort().join('|');
+      if (seenPairs.has(pairKey)) {
+        i += 2;
+        continue;
+      }
+      seenPairs.add(pairKey);
       games.push({
         id: `shot-${n++}`,
         teamA: a.model,
@@ -234,6 +288,11 @@ export function parseScreenshotOdds(text: string, book = ''): ScreenshotGame[] {
       i += 2;
     } else {
       // Lone team (duplicate, or its pair never arrived): keep it visible.
+      if (seenPairs.has(`lone|${a.model}`)) {
+        i += 1;
+        continue;
+      }
+      seenPairs.add(`lone|${a.model}`);
       games.push({
         id: `shot-${n++}`,
         teamA: a.model,

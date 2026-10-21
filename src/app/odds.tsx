@@ -676,7 +676,8 @@ function ScreenshotOddsSection({
         priced against the model: model series probability vs book odds, ROI edge, and a
         Kelly stake. Verdicts are per game, not a parlay — the games are priced
         independently. BET needs ROI edge ≥ 5%; 0–5% is THIN (positive, quarter Kelly);
-        at or below 0% is NO BET.
+        at or below 0% is NO BET. Only &quot;(Match)&quot; rows are used — &quot;(Map 1)&quot;
+        rows repeat the same match and are ignored, and a repeated match is kept once.
       </Text>
       <Text style={[S.dim, { marginBottom: 10 }]}>
         Check every row before trusting it: OCR misreads names and digits, and it
