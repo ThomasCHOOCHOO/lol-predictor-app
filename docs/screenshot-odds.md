@@ -102,3 +102,16 @@ Phone-specific handling in the OCR path:
   rows must be deleted or corrected.
 - A screenshot with many games, small text, or a dark board will parse
   worse — crop to just the odds board before uploading.
+
+## DraftKings pill board (2026-10-21)
+
+A second board layout, DraftKings "Upcoming Games": team, odds pills,
+team ("Gen G" / "-550 +350" / "Invictus Gaming"). The old parser
+discarded the second token on an odds-only line, shifting every later
+game's price by one (Invictus got Hanwha's -500, etc.). Fix: leftover
+odds queue as pending odds and go to the next team line with no odds of
+its own; if that team line carries its own odds, the queued odds are
+stale and dropped. Validated on real 2x OCR: all 6 games, all odds
+correct. Verdicts on this board: BET Invictus Gaming +17.6%, THIN Top
+Esports +4.5%, BET Movistar KOI +24.1%, BET Karmine Corp +19.2%, NO BET
+G2 vs Dplus KIA, BET Team Liquid +5.6%.

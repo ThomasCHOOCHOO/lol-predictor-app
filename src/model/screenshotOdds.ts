@@ -108,6 +108,11 @@ const TEAM_CANDIDATES: { key: string; normKey: string; model: string }[] = (() =
   // can't silently change screenshot matching.
   if (!map.has('liquid')) map.set('liquid', 'Team Liquid');
   if (!map.has('koi')) map.set('koi', 'Movistar KOI');
+  // DraftKings writes "Gen G" (space, no dot); the artifact's "gen"
+  // alias already maps it, but the longer explicit key wins first and
+  // documents the board spelling. ("Top" -> Top Esports is already an
+  // artifact alias.)
+  if (!map.has('gen g')) map.set('gen g', 'Gen.G');
   const out = [...map.entries()].map(([key, model]) => ({ key, normKey: norm(key), model }));
   out.sort((a, b) => b.key.length - a.key.length);
   return out;
@@ -229,9 +234,14 @@ function oddsInLine(line: string): OddsToken[] {
  *   without odds queue up; odds-only lines drain that queue in order.
  *   The old single-pending-team slot overwrote the first team when a
  *   second team-only line arrived — the queue fixes that.
- * - Extra odds tokens on a team line are discarded (they belong to
- *   other markets on that row, e.g. handicap) rather than spilling
- *   onto the next team.
+ * - Pending odds: a DraftKings pill board reads team, odds, team
+ *   ("Gen G" / "-550 +350" / "Invictus Gaming"), so an odds-only line
+ *   has two tokens but only one pending team. The second token used
+ *   to be discarded, shifting every later game's price by one. Now
+ *   leftover odds queue up and go to the next team line that has no
+ *   odds of its own; if that team line does carry its own odds, the
+ *   queued odds are stale (other market / duplicate) and are dropped.
+ *   Extra odds on a team line likewise queue instead of being lost.
  * - Odds on a team line are assigned to pending teams first: Tesseract
  *   puts both moneyline odds on the second team's line on this board,
  *   so position-only pairing would shift every favourite's price onto
@@ -278,6 +288,7 @@ export function parseScreenshotOdds(text: string, book = ''): ScreenshotGame[] {
   }
   const cands: Cand[] = [];
   const pendingTeams: { model: string; raw: string }[] = [];
+  const pendingOdds: number[] = [];
   for (const line of lines) {
     const teams = teamsInLine(line);
     let odds = oddsInLine(line);
@@ -289,18 +300,23 @@ export function parseScreenshotOdds(text: string, book = ''): ScreenshotGame[] {
     // rather than emitting a BET on a guessed price. A genuine pick'em
     // (two teams, two identical prices) is untouched: tokens there do
     // not exceed the team count.
+    let oddsDropped = false;
     if (odds.length > teams.length) {
       const seen = new Set<number>();
       if (odds.some((o) => (seen.has(o.value) ? true : (seen.add(o.value), false)))) {
         odds = [];
+        oddsDropped = true;
       }
     }
     if (teams.length === 0) {
-      // Odds-only line: drain the pending-team queue in order.
+      // Odds-only line: drain the pending-team queue in order; any
+      // leftover tokens queue as pending odds (pill-board layout:
+      // team, odds, team — the second token belongs to the team on
+      // the NEXT line, not to the next match).
       for (const tok of odds) {
         const team = pendingTeams.shift();
-        if (!team) break;
-        cands.push({ model: team.model, raw: team.raw, odds: tok.value });
+        if (team) cands.push({ model: team.model, raw: team.raw, odds: tok.value });
+        else pendingOdds.push(tok.value);
       }
       continue;
     }
@@ -316,11 +332,26 @@ export function parseScreenshotOdds(text: string, book = ''): ScreenshotGame[] {
       ...teams.map((t) => ({ model: t.model, raw: t.raw })),
     ];
     pendingTeams.length = 0;
-    for (let ri = 0; ri < recipients.length; ri++) {
-      const r = recipients[ri];
-      const o = odds[ri]?.value ?? null;
-      if (o === null) pendingTeams.push(r);
-      else cands.push({ model: r.model, raw: r.raw, odds: o });
+    if (odds.length > 0) {
+      // This line carries its own prices, so any queued odds from an
+      // earlier line are stale (other market / duplicate) — drop them.
+      pendingOdds.length = 0;
+      for (let ri = 0; ri < recipients.length; ri++) {
+        const r = recipients[ri];
+        const o = odds[ri]?.value ?? null;
+        if (o === null) pendingTeams.push(r);
+        else cands.push({ model: r.model, raw: r.raw, odds: o });
+      }
+      // Extra tokens on this line (opponent's price, pill layout)
+      // queue for the next team line that has no odds of its own.
+      for (let oi = recipients.length; oi < odds.length; oi++) pendingOdds.push(odds[oi].value);
+    } else {
+      if (oddsDropped) pendingOdds.length = 0;
+      for (const r of recipients) {
+        const o = pendingOdds.shift() ?? null;
+        if (o === null) pendingTeams.push(r);
+        else cands.push({ model: r.model, raw: r.raw, odds: o });
+      }
     }
   }
   for (const team of pendingTeams) cands.push({ model: team.model, raw: team.raw, odds: null });
