@@ -59,6 +59,24 @@ Esports; NO BET on Secret Whales vs LYON. Note the LØS verdict
 known weak-region-dominator inflation case, so treat that one as a
 model outlier to check, not a confident bet.
 
+## UI + book-size sizing (2026-10-21)
+
+The section is deliberately quiet now: one short intro line, a "How it
+works" toggle, Book + Book size on one row, Pick / Take photo buttons,
+and a collapsed "OCR text / paste" toggle. Per game, only the actionable
+side is prominent ("BET Team — $stake" + model vs implied + ROI + Kelly
+label); non-actionable sides are one dim line each, and "Parsed
+cleanly" / row notes only appear when a row actually needs checking.
+
+Bet sizing: stake = Kelly fraction x fStar x **book size**, where book
+size is the always-visible "Book size ($)" input next to the book name
+(default $100, matching the funded balance at each book). It no longer
+inherits the Kelly tab's bankroll — that was confusing, since the Kelly
+tab's bankroll is a total, not what you hold at one book. Change book
+size and every stake updates. Verified on the Oct 23 board: Karmine Corp
+Full Kelly fStar 0.1335 -> $13.35 at $100, $33.39 at $250; LØS Half Kelly
+fStar 0.2238, frac 0.5 -> $11.19 at $100, $27.98 at $250.
+
 ## Phone web app (2026-10-20)
 
 OCR does NOT work in the Expo/native app — React Native has no

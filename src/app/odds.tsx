@@ -84,7 +84,7 @@ function lastPullSnapshots(history: OddsSnapshot[]): OddsSnapshot[] | null {
 }
 
 export default function OddsScreen() {
-  const { setResult, setKellySide, setOddsText, setPinBlue, setPinRed, setProbMode, calibrationMode, bankrollText, oddsEvents: events, setOddsEvents: setEvents } = usePrediction();
+  const { setResult, setKellySide, setOddsText, setPinBlue, setPinRed, setProbMode, calibrationMode, oddsEvents: events, setOddsEvents: setEvents } = usePrediction();
   const [keyReady, setKeyReady] = useState<boolean | null>(null); // null = checking
   const [keyInput, setKeyInput] = useState('');
   const [remaining, setRemaining] = useState<number | null>(null);
@@ -341,7 +341,7 @@ export default function OddsScreen() {
         />
 
         {/* -------- screenshot odds: OCR a book board -> verdicts per game -------- */}
-        <ScreenshotOddsSection calibrationMode={calibrationMode} bankrollText={bankrollText} />
+        <ScreenshotOddsSection calibrationMode={calibrationMode} />
 
         {/* -------- arb calculator: planning tool, manual inputs -------- */}
         <ArbCalculator key={arbCalcKey} prefill={arbPrefill} />
@@ -584,10 +584,8 @@ export default function OddsScreen() {
 
 function ScreenshotOddsSection({
   calibrationMode,
-  bankrollText,
 }: {
   calibrationMode: CalibrationMode;
-  bankrollText: string;
 }) {
   const [book, setBook] = useState('');
   const [imageUri, setImageUri] = useState<string | null>(null);
@@ -595,16 +593,15 @@ function ScreenshotOddsSection({
   const [games, setGames] = useState<ScreenshotGame[]>([]);
   const [ocrRunning, setOcrRunning] = useState(false);
   const [shotError, setShotError] = useState<string | null>(null);
-  const [localBank, setLocalBank] = useState('');
-
-  const ctxBank = parseFloat(bankrollText.replace(',', '.'));
-  const localN = parseFloat(localBank.replace(',', '.'));
-  const bankroll =
-    Number.isFinite(ctxBank) && ctxBank > 0
-      ? ctxBank
-      : Number.isFinite(localN) && localN > 0
-        ? localN
-        : null;
+  const [showHelp, setShowHelp] = useState(false);
+  const [showOcr, setShowOcr] = useState(false);
+  // Book size = how much you hold at THIS book. It — not the Kelly tab's
+  // bankroll — drives every stake below: stake = Kelly fraction x fStar
+  // x book size. Default $100, matching the funded balance at each book.
+  const [bookSizeText, setBookSizeText] = useState('100');
+  const parsedBookSize = parseFloat(bookSizeText.replace(',', '.'));
+  const bookSize =
+    Number.isFinite(parsedBookSize) && parsedBookSize > 0 ? parsedBookSize : null;
 
   const verdicts = useMemo(
     () => verdictsForGames(games, calibrationMode),
@@ -685,34 +682,52 @@ function ScreenshotOddsSection({
     <View style={S.card}>
       <Text style={S.label}>Screenshot odds — should you bet?</Text>
       <Text style={[S.dim, { marginBottom: 8 }]}>
-        Upload a screenshot of a book&apos;s moneyline board. On web it&apos;s read on-device
-        (nothing is uploaded to a server), parsed into one row per game, and each game is
-        priced against the model: model series probability vs book odds, ROI edge, and a
-        Kelly stake. Verdicts are per game, not a parlay — the games are priced
-        independently. BET needs ROI edge ≥ 5%; 0–5% is THIN (positive, quarter Kelly);
-        at or below 0% is NO BET. Only &quot;(Match)&quot; rows are used — &quot;(Map 1)&quot;
-        rows repeat the same match and are ignored, and a repeated match is kept once.
-        Odds display in American format (+323 / -435); typing decimal odds still works.
+        Screenshot a book&apos;s moneyline board. Each game is priced against the model,
+        per game — not as a parlay. BET ≥ +5% ROI, THIN 0–5%, NO BET ≤ 0%.
       </Text>
-      <Text style={[S.dim, { marginBottom: 10 }]}>
-        Check every row before trusting it: OCR misreads names and digits, and it
-        can&apos;t tell a series price from a map-1 or handicap price. Fix any wrong
-        team or odds in place — verdicts update as you type.
-      </Text>
-      <TextInput
-        style={[S.input, { marginBottom: 8 }]}
-        placeholder="Book (e.g. Pinnacle) — optional"
-        placeholderTextColor={C.faint}
-        value={book}
-        onChangeText={setBook}
-      />
-      <Text style={[S.dim, { marginBottom: 8 }]}>
-        On your phone, open this site in Safari or Chrome — OCR does not work
-        in the Expo app (no WebAssembly there). A full board can take
-        ~20 seconds on a phone; keep the tab open while it reads. The first
-        use downloads the OCR language data (~3 MB), so it needs a connection
-        the first time, then it runs on-device.
-      </Text>
+      <Pressable onPress={() => setShowHelp((s) => !s)} style={{ marginBottom: 10 }}>
+        <Text style={[S.dim, { fontWeight: '700' }]}>
+          {showHelp ? 'Hide details ▾' : 'How it works ▸'}
+        </Text>
+      </Pressable>
+      {showHelp && (
+        <Text style={[S.dim, { marginBottom: 10 }]}>
+          On web the screenshot is read on-device (nothing is uploaded). Only
+          &quot;(Match)&quot; rows are used — &quot;(Map 1)&quot; rows repeat the same
+          match and are ignored. Odds show in American format (+323 / -435);
+          typing decimal odds still works. Check every row before trusting it:
+          OCR misreads names and digits — fix any wrong team or odds in place
+          and verdicts update as you type. Series probabilities use the
+          side-averaged per-map prob (binomial for the row&apos;s best-of). On your
+          phone, open this site in Safari or Chrome — OCR does not work in the
+          Expo app. A full board can take ~20 seconds on a phone; the first use
+          downloads the OCR language data (~3 MB). Pricing only — no bet is
+          placed from here.
+        </Text>
+      )}
+      <View style={[S.row, { gap: 8, marginBottom: 8 }]}>
+        <View style={{ flex: 1.3 }}>
+          <Text style={S.label}>Book</Text>
+          <TextInput
+            style={S.input}
+            placeholder="e.g. Pinnacle"
+            placeholderTextColor={C.faint}
+            value={book}
+            onChangeText={setBook}
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={S.label}>Book size ($)</Text>
+          <TextInput
+            style={S.input}
+            placeholder="100"
+            placeholderTextColor={C.faint}
+            keyboardType="decimal-pad"
+            value={bookSizeText}
+            onChangeText={setBookSizeText}
+          />
+        </View>
+      </View>
       <View style={[S.row, { gap: 8 }]}>
         <Pressable
           style={[S.btn, { flex: 1 }]}
@@ -734,50 +749,39 @@ function ScreenshotOddsSection({
       {imageUri && (
         <Image
           source={{ uri: imageUri }}
-          style={{ width: '100%', height: 180, marginTop: 10, borderRadius: 8 }}
+          style={{ width: '100%', height: 110, marginTop: 10, borderRadius: 8 }}
           resizeMode="contain"
         />
       )}
       {shotError && (
         <Text style={[S.body, { color: C.amber, marginTop: 8 }]}>{shotError}</Text>
       )}
-      <Text style={[S.label, { marginTop: 12 }]}>OCR text (editable — re-parse after fixing)</Text>
-      <TextInput
-        style={[S.input, { minHeight: 110, textAlignVertical: 'top', marginBottom: 8 }]}
-        placeholder="OCR text appears here, or paste a book board as text"
-        placeholderTextColor={C.faint}
-        multiline
-        autoCapitalize="none"
-        autoCorrect={false}
-        value={ocrText}
-        onChangeText={setOcrText}
-      />
-      <View style={[S.row, { gap: 8 }]}>
-        <Pressable
-          style={[S.chip, { flex: 1 }]}
-          onPress={() => setGames(parseScreenshotOdds(ocrText, book))}
-        >
-          <Text style={S.chipText}>Parse text into games</Text>
+      <View style={[S.row, { gap: 8, marginTop: 10 }]}>
+        <Pressable style={S.chip} onPress={() => setShowOcr((s) => !s)}>
+          <Text style={S.chipText}>{showOcr ? 'Hide OCR text ▾' : 'OCR text / paste ▸'}</Text>
         </Pressable>
         <Pressable style={S.chip} onPress={addManualGame}>
-          <Text style={S.chipText}>+ Add game by hand</Text>
+          <Text style={S.chipText}>+ Add game</Text>
         </Pressable>
       </View>
-
-      {!(Number.isFinite(ctxBank) && ctxBank > 0) && (
-        <View style={{ marginTop: 10 }}>
-          <Text style={S.label}>Bankroll (for Kelly stakes)</Text>
+      {showOcr && (
+        <View style={{ marginTop: 8 }}>
           <TextInput
-            style={S.input}
-            placeholder="e.g. 100"
+            style={[S.input, { minHeight: 110, textAlignVertical: 'top', marginBottom: 8 }]}
+            placeholder="OCR text appears here, or paste a book board as text"
             placeholderTextColor={C.faint}
-            keyboardType="decimal-pad"
-            value={localBank}
-            onChangeText={setLocalBank}
+            multiline
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={ocrText}
+            onChangeText={setOcrText}
           />
-          <Text style={[S.faint, { marginTop: 6 }]}>
-            Tip: set it once on the Kelly tab and it carries over here.
-          </Text>
+          <Pressable
+            style={S.chip}
+            onPress={() => setGames(parseScreenshotOdds(ocrText, book))}
+          >
+            <Text style={S.chipText}>Parse text into games</Text>
+          </Pressable>
         </View>
       )}
 
@@ -785,30 +789,23 @@ function ScreenshotOddsSection({
         <ScreenshotGameRow
           key={v.game.id}
           verdict={v}
-          bankroll={bankroll}
+          bookSize={bookSize}
           onUpdate={(patch) => updateGame(v.game.id, patch)}
           onRemove={() => setGames((prev) => prev.filter((g) => g.id !== v.game.id))}
         />
       ))}
-      {games.length > 0 && (
-        <Text style={[S.faint, { marginTop: 10 }]}>
-          Pricing only — no bet is placed from here. Series probabilities use the
-          side-averaged per-map prob (binomial for the row&apos;s best-of), the same
-          conversion as the Predict tab&apos;s series mode.
-        </Text>
-      )}
     </View>
   );
 }
 
 function ScreenshotGameRow({
   verdict,
-  bankroll,
+  bookSize,
   onUpdate,
   onRemove,
 }: {
   verdict: ReturnType<typeof verdictsForGames>[number];
-  bankroll: number | null;
+  bookSize: number | null;
   onUpdate: (patch: Partial<ScreenshotGame>) => void;
   onRemove: () => void;
 }) {
@@ -839,16 +836,12 @@ function ScreenshotGameRow({
             <Text style={[S.chipText, g.bestOf === n && { color: '#06121F' }]}>Bo{n}</Text>
           </Pressable>
         ))}
-        <Text
-          style={[
-            S.dim,
-            { color: g.confidence === 'high' && !verdict.warning ? C.green : C.amber, alignSelf: 'center' },
-          ]}
-        >
-          {g.confidence === 'high' && !verdict.warning ? 'Parsed cleanly' : 'Check this row'}
-        </Text>
+        {(g.confidence !== 'high' || verdict.warning) && (
+          <Text style={[S.dim, { color: C.amber, alignSelf: 'center' }]}>
+            Check this row{verdict.warning ? ` — ${verdict.warning}` : ''}
+          </Text>
+        )}
       </View>
-      {g.note ? <Text style={[S.faint, { marginTop: 4 }]}>{g.note}</Text> : null}
       <View style={[S.row, { gap: 8, marginTop: 8 }]}>
         <TextInput
           style={[S.input, { flex: 1 }]}
@@ -902,29 +895,42 @@ function ScreenshotGameRow({
         />
       </View>
 
-      <Text style={[S.body, { fontWeight: '800', marginTop: 10 }]}>{verdict.summary}</Text>
-      {verdict.sides.map((s) => {
-        const stake =
-          (s.verdict === 'BET' || s.verdict === 'THIN') && bankroll !== null
-            ? Math.max(0, s.fStar * s.kellyFrac) * bankroll
-            : null;
-        return (
-          <Text key={s.team} style={S.dim}>
-            {s.team}: model {fmtPct(s.pSeries)} vs implied {fmtPct(s.implied)} · ROI{' '}
-            <Text style={{ color: s.roiEdge > 0 ? C.green : C.text, fontWeight: '700' }}>
-              {s.roiEdge > 0 ? '+' : ''}
-              {(s.roiEdge * 100).toFixed(1)}%
-            </Text>{' '}
-            · {s.verdict}
-            {s.verdict !== 'NO BET' && ` · ${s.kellyLabel}`}
-            {stake !== null ? (
-              <>
-                {' '}→ <Text style={[S.body, { fontWeight: '700' }]}>{fmtMoney(stake)}</Text>
-              </>
-            ) : null}
-          </Text>
-        );
-      })}
+      {/* Verdict, one line per side, actionable side first and prominent.
+          The stake is Kelly fraction x fStar x book size — change Book size
+          above and every stake here updates. */}
+      {verdict.sides.length === 0 ? (
+        <Text style={[S.dim, { marginTop: 10 }]}>{verdict.summary}</Text>
+      ) : (
+        <View style={{ marginTop: 10, gap: 4 }}>
+          {verdict.actionable.map((s) => {
+            const stake =
+              bookSize !== null ? Math.max(0, s.fStar * s.kellyFrac) * bookSize : null;
+            return (
+              <View key={s.team}>
+                <Text style={[S.body, { fontWeight: '800', color: s.verdict === 'BET' ? C.green : C.amber }]}>
+                  {s.verdict} {s.team}
+                  {stake !== null ? ` — ${fmtMoney(stake)}` : ' — enter book size to size this bet'}
+                </Text>
+                <Text style={S.dim}>
+                  Model {fmtPct(s.pSeries)} vs implied {fmtPct(s.implied)} · ROI +
+                  {(s.roiEdge * 100).toFixed(1)}% · {s.kellyLabel}
+                </Text>
+              </View>
+            );
+          })}
+          {verdict.sides
+            .filter((s) => s.verdict === 'NO BET')
+            .map((s) => (
+              <Text key={s.team} style={S.dim}>
+                {s.team}: {fmtPct(s.pSeries)} vs {fmtPct(s.implied)} implied · ROI{' '}
+                {(s.roiEdge * 100).toFixed(1)}% · No bet
+              </Text>
+            ))}
+          {verdict.actionable.length === 0 && verdict.sides.length > 0 && (
+            <Text style={[S.body, { fontWeight: '700' }]}>No bet on either side</Text>
+          )}
+        </View>
+      )}
     </View>
   );
 }
