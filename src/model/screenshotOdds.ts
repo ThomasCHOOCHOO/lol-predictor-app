@@ -23,7 +23,14 @@
  *   a placed bet.
  */
 import { TEAM_ALIASES, TEAMS } from './artifacts';
-import { americanToDecimal, binNForP, kelly, parseOddsInput, recommendKelly } from './kelly';
+import {
+  americanToDecimal,
+  binNForP,
+  decimalToAmerican,
+  kelly,
+  parseOddsInput,
+  recommendKelly,
+} from './kelly';
 import { seriesConversion } from './predict';
 import type { CalibrationMode } from './types';
 
@@ -76,6 +83,8 @@ export interface GameVerdict {
   actionable: SideResult[];
   /** One-line summary for the card header. */
   summary: string;
+  /** Set when the row's odds fail the implied-probability sanity check. */
+  warning: string | null;
 }
 
 /* ------------------------- team matching ------------------------- */
@@ -130,16 +139,41 @@ export function mapScreenshotTeam(raw: string): string | null {
   return null;
 }
 
-/** Find all team matches in one OCR line, longest-first, non-overlapping. */
+/** Find all team matches in one OCR line, longest-first, non-overlapping.
+ *
+ * Boundary rule (learned 2026-10-21 from a real Pinnacle board read):
+ * short aliases must not match inside ordinary words — "Atlanta" contains
+ * "tla" (Team Liquid) and "Legends" contains "gen" (Gen.G), and both
+ * phantoms corrupted the whole parse that day (the phantom Gen.G sat in
+ * the pending queue and shifted every price one slot forward). So a
+ * 1–2 letter key must be a whole word (boundaries on both sides), and a
+ * 3+ letter key must at least START on a word boundary (the end stays
+ * open so OCR junk appends like "Gen.G1" or "T1Live" still match).
+ */
 function teamsInLine(line: string): { model: string; raw: string; start: number; end: number }[] {
   const cleaned = cleanLine(line);
   const lower = cleaned.toLowerCase();
   const found: { model: string; raw: string; start: number; end: number }[] = [];
   const taken: [number, number][] = [];
   for (const c of TEAM_CANDIDATES) {
-    const idx = lower.indexOf(c.key);
+    let from = 0;
+    let idx = -1;
+    while (from <= lower.length - c.key.length) {
+      const j = lower.indexOf(c.key, from);
+      if (j === -1) break;
+      const beforeOk = j === 0 || !/[a-z0-9]/.test(lower[j - 1]);
+      const afterOk =
+        c.key.length > 2 ||
+        j + c.key.length >= lower.length ||
+        !/[a-z0-9]/.test(lower[j + c.key.length]);
+      const overlaps = taken.some(([s, e]) => j < e && j + c.key.length > s);
+      if (beforeOk && afterOk && !overlaps) {
+        idx = j;
+        break;
+      }
+      from = j + 1;
+    }
     if (idx === -1) continue;
-    if (taken.some(([s, e]) => idx < e && idx + c.key.length > s)) continue;
     taken.push([idx, idx + c.key.length]);
     found.push({ model: c.model, raw: cleaned.slice(idx, idx + c.key.length), start: idx, end: idx + c.key.length });
   }
@@ -207,17 +241,36 @@ function oddsInLine(line: string): OddsToken[] {
  *   of it silently vanishing.
  * - Duplicate team pairs are dropped (keep the first): a board that
  *   repeats a match under a misread "(Map 1)" label still yields one row.
+ * - Lines above a "League of Legends" header are ignored: a multi-sport
+ *   screenshot lists other sports first, and their odds would otherwise
+ *   drain into the pending-team queue.
+ * - Short team aliases match on word boundaries only ("Atlanta" contains
+ *   "tla", "Legends" contains "gen" — both produced phantom teams on a
+ *   real 2026-10-21 board read and shifted every price after them).
+ * - A line whose odds tokens contain an exact duplicate, with more
+ *   tokens than teams, has all its odds dropped (Tesseract merging a
+ *   Match row and its Map 1 row onto one line). A genuine pick'em
+ *   (two teams, two identical prices) is untouched.
+ * - Verdicts carry an implied-probability sanity check: one book's two
+ *   sides sum to ~104–110%. Outside 95–120% the row is flagged and no
+ *   BET/THIN is emitted, so a corrupted row can never read as a bet.
  */
 export function parseScreenshotOdds(text: string, book = ''): ScreenshotGame[] {
-  const lines = text
+  let lines = text
     .split(/\r?\n/)
     .map((l) => cleanLine(l))
-    .filter(Boolean)
-    .filter((l) => {
-      const lower = l.toLowerCase();
-      // Map rows only — "(Map 1)", "Map 1", "Map1" (OCR may drop the paren).
-      return !lower.includes('(map') && !/\bmap\s*1\b/.test(lower) && !lower.includes('map1');
-    });
+    .filter(Boolean);
+  // Scope to the LoL board: a multi-sport screenshot (e.g. Pinnacle's
+  // home page) lists other sports above the LoL section, and their
+  // teams/odds would otherwise leak into the pending-team queue. If no
+  // LoL header is present (pasted text), parse everything as before.
+  const lolIdx = lines.findIndex((l) => /league of legends/i.test(l));
+  if (lolIdx >= 0) lines = lines.slice(lolIdx);
+  lines = lines.filter((l) => {
+    const lower = l.toLowerCase();
+    // Map rows only — "(Map 1)", "Map 1", "Map1" (OCR may drop the paren).
+    return !lower.includes('(map') && !/\bmap\s*1\b/.test(lower) && !lower.includes('map1');
+  });
   interface Cand {
     model: string;
     raw: string;
@@ -227,7 +280,21 @@ export function parseScreenshotOdds(text: string, book = ''): ScreenshotGame[] {
   const pendingTeams: { model: string; raw: string }[] = [];
   for (const line of lines) {
     const teams = teamsInLine(line);
-    const odds = oddsInLine(line);
+    let odds = oddsInLine(line);
+    // A duplicated token on one line is corruption, not a price:
+    // Tesseract merges a Match row and its Map 1 row onto one line and
+    // the same price appears twice ("Invictus (Match) +323 +323").
+    // Trusting either copy misprices the pending team, so drop the
+    // whole line's odds instead — the row stays unpriced and visible
+    // rather than emitting a BET on a guessed price. A genuine pick'em
+    // (two teams, two identical prices) is untouched: tokens there do
+    // not exceed the team count.
+    if (odds.length > teams.length) {
+      const seen = new Set<number>();
+      if (odds.some((o) => (seen.has(o.value) ? true : (seen.add(o.value), false)))) {
+        odds = [];
+      }
+    }
     if (teams.length === 0) {
       // Odds-only line: drain the pending-team queue in order.
       for (const tok of odds) {
@@ -258,13 +325,25 @@ export function parseScreenshotOdds(text: string, book = ''): ScreenshotGame[] {
   }
   for (const team of pendingTeams) cands.push({ model: team.model, raw: team.raw, odds: null });
 
+  // Collapse adjacent duplicate teams, keeping the first: a Map row whose
+  // label OCR dropped ("Gen.G -434" right after "Gen.G (Match) -435")
+  // would otherwise leave a noise lone card and shift nothing else —
+  // the pair dedupe below already drops exact repeat pairs, this drops
+  // the repeat team itself.
+  const uniq: Cand[] = [];
+  for (const c of cands) {
+    const prev = uniq[uniq.length - 1];
+    if (prev && prev.model === c.model) continue;
+    uniq.push(c);
+  }
+
   const games: ScreenshotGame[] = [];
   const seenPairs = new Set<string>();
   let i = 0;
   let n = 0;
-  while (i < cands.length) {
-    const a = cands[i];
-    const b = cands[i + 1];
+  while (i < uniq.length) {
+    const a = uniq[i];
+    const b = uniq[i + 1];
     if (b && b.model !== a.model) {
       const pairKey = [a.model, b.model].sort().join('|');
       if (seenPairs.has(pairKey)) {
@@ -316,6 +395,13 @@ export function parseScreenshotOdds(text: string, book = ''): ScreenshotGame[] {
 
 export const BET_BAR = 0.05;
 
+/** Decimal odds -> American display string ("+323" / "-435"). */
+export function formatAmerican(decimal: number): string {
+  const a = decimalToAmerican(decimal);
+  if (a === null) return decimal.toFixed(2);
+  return a > 0 ? `+${a}` : `${a}`;
+}
+
 export function verdictForGame(
   game: ScreenshotGame,
   calibration: CalibrationMode = 'standard',
@@ -327,6 +413,7 @@ export function verdictForGame(
       sides: [],
       actionable: [],
       summary: 'Unmapped — pick both teams to price this game.',
+      warning: null,
     };
   }
   const conv = seriesConversion(game.teamA, game.teamB, game.bestOf, calibration);
@@ -356,16 +443,36 @@ export function verdictForGame(
       verdict,
     });
   }
-  const actionable = sides
-    .filter((s) => s.verdict === 'BET' || s.verdict === 'THIN')
-    .sort((a, b) => (a.verdict === 'BET' ? 0 : 1) - (b.verdict === 'BET' ? 0 : 1));
+  // Sanity check on the pair: one book's two sides sum to ~104–110%
+  // implied (the margin). A sum far outside that band means the row's
+  // odds are corrupted (wrong pairing, duplicated price, foreign
+  // sport) — never emit a BET on it. Forced NO BET + a warning the
+  // user can clear by fixing the row. Cross-book rows (best price
+  // each side) can legitimately sum below 100%; the warning says
+  // one book's sides, and the user can ignore it for those.
+  let warning: string | null = null;
+  if (sides.length === 2) {
+    const sum = sides[0].implied + sides[1].implied;
+    if (sum < 0.95 || sum > 1.2) {
+      warning = `Odds look wrong — implied probabilities sum to ${(sum * 100).toFixed(0)}% for one book's two sides (normal ~104–110%). Check the odds before trusting this row.`;
+      for (const s of sides) s.verdict = 'NO BET';
+    }
+  }
+  const actionable =
+    warning !== null
+      ? []
+      : sides
+          .filter((s) => s.verdict === 'BET' || s.verdict === 'THIN')
+          .sort((a, b) => (a.verdict === 'BET' ? 0 : 1) - (b.verdict === 'BET' ? 0 : 1));
   const summary =
-    sides.length === 0
-      ? 'Enter odds on both sides to price this game.'
-      : actionable.length > 0
-        ? actionable.map((s) => `${s.verdict}: ${s.team} @ ${s.odds.toFixed(2)} (ROI ${s.roiEdge >= 0 ? '+' : ''}${(s.roiEdge * 100).toFixed(1)}%)`).join(' · ')
-        : 'NO BET on either side — neither price beats the model.';
-  return { game, pA, sides, actionable, summary };
+    warning !== null
+      ? warning
+      : sides.length === 0
+        ? 'Enter odds on both sides to price this game.'
+        : actionable.length > 0
+          ? actionable.map((s) => `${s.verdict}: ${s.team} @ ${formatAmerican(s.odds)} (ROI ${s.roiEdge >= 0 ? '+' : ''}${(s.roiEdge * 100).toFixed(1)}%)`).join(' · ')
+          : 'NO BET on either side — neither price beats the model.';
+  return { game, pA, sides, actionable, summary, warning };
 }
 
 /** Re-run the whole card from edited rows (used after any edit). */

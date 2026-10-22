@@ -17,6 +17,7 @@ import { fmtMoney, fmtPct, parseOddsInput } from '../model/kelly';
 import { predictMatchup } from '../model/predict';
 import { ocrImageToText } from '../model/screenshotOcr';
 import {
+  formatAmerican,
   mapScreenshotTeam,
   parseRowOdds,
   parseScreenshotOdds,
@@ -691,6 +692,7 @@ function ScreenshotOddsSection({
         independently. BET needs ROI edge ≥ 5%; 0–5% is THIN (positive, quarter Kelly);
         at or below 0% is NO BET. Only &quot;(Match)&quot; rows are used — &quot;(Map 1)&quot;
         rows repeat the same match and are ignored, and a repeated match is kept once.
+        Odds display in American format (+323 / -435); typing decimal odds still works.
       </Text>
       <Text style={[S.dim, { marginBottom: 10 }]}>
         Check every row before trusting it: OCR misreads names and digits, and it
@@ -813,8 +815,8 @@ function ScreenshotGameRow({
   const g = verdict.game;
   const [teamAText, setTeamAText] = useState(g.rawA || g.teamA || '');
   const [teamBText, setTeamBText] = useState(g.rawB || g.teamB || '');
-  const [oddsAText, setOddsAText] = useState(g.oddsA !== null ? String(g.oddsA) : '');
-  const [oddsBText, setOddsBText] = useState(g.oddsB !== null ? String(g.oddsB) : '');
+  const [oddsAText, setOddsAText] = useState(g.oddsA !== null ? formatAmerican(g.oddsA) : '');
+  const [oddsBText, setOddsBText] = useState(g.oddsB !== null ? formatAmerican(g.oddsB) : '');
 
   return (
     <View style={[styles.shotRow, { marginTop: 12 }]}>
@@ -840,10 +842,10 @@ function ScreenshotGameRow({
         <Text
           style={[
             S.dim,
-            { color: g.confidence === 'high' ? C.green : C.amber, alignSelf: 'center' },
+            { color: g.confidence === 'high' && !verdict.warning ? C.green : C.amber, alignSelf: 'center' },
           ]}
         >
-          {g.confidence === 'high' ? 'Parsed cleanly' : 'Check this row'}
+          {g.confidence === 'high' && !verdict.warning ? 'Parsed cleanly' : 'Check this row'}
         </Text>
       </View>
       {g.note ? <Text style={[S.faint, { marginTop: 4 }]}>{g.note}</Text> : null}
