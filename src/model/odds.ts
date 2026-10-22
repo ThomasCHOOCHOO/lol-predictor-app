@@ -94,7 +94,7 @@ export interface BookmakerOdds {
   away: number | null; // decimal odds on away_team
   lastUpdate: string | null;
   /** Which aggregator this row came from. Undefined = The Odds API (legacy rows). */
-  source?: 'oddsapi' | 'oddspapi';
+  source?: 'oddsapi' | 'oddspapi' | 'board';
 }
 
 export interface OddsEvent {

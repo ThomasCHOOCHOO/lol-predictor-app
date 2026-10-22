@@ -4,6 +4,7 @@ import { Image, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text,
 import * as ImagePicker from 'expo-image-picker';
 import { ARB_ALERT_BAR, ARB_CAVEAT, BookmakerOdds, OddsEvent, arbFromBestLegs, bestPrices, clearOddsApiKey, detectArb, fetchOdds, getMyBooks, getOddsApiKey, mapOddsTeamName, mergeOddsEvents, setMyBooks, setOddsApiKey, splitStake } from '../model/odds';
 import { clearOddsPapiKey, BOOK_TITLES, fetchOddsPapi, getOddsPapiKey, setOddsPapiKey } from '../model/oddspapi';
+import { fetchBoardSnapshot } from '../model/boardSnapshot';
 import {
   OddsSnapshot,
   appendOddsSnapshots,
@@ -96,7 +97,8 @@ export default function OddsScreen() {
   const [history, setHistory] = useState<OddsSnapshot[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [now, setNow] = useState(() => Date.now()); // ticks every 60s so the relative age stays fresh
-  const [source, setSource] = useState<'oddsapi' | 'oddspapi' | 'both'>('both');
+  const [source, setSource] = useState<'oddsapi' | 'oddspapi' | 'both' | 'board'>('board');
+  const [boardNote, setBoardNote] = useState<string | null>(null);
   const [papiKeyReady, setPapiKeyReady] = useState<boolean | null>(null); // null = checking
   const [papiKeyInput, setPapiKeyInput] = useState('');
   const [papiUsed, setPapiUsed] = useState<number | null>(null);
@@ -172,7 +174,22 @@ export default function OddsScreen() {
     setLoading(true);
     setError(null);
     setPartialError(null);
+    setBoardNote(null);
     try {
+      // Board source: no key, no quota — a published snapshot read
+      // automatically from Pinnacle's public board.
+      if (source === 'board') {
+        const { events: evts, snapshot } = await fetchBoardSnapshot();
+        setEvents(evts);
+        const seen = new Map<string, string>();
+        for (const e of evts) for (const b of e.bookmakers) seen.set(b.key, b.title);
+        setAllBooks([...seen.entries()].map(([key, title]) => ({ key, title })));
+        setBoardNote(
+          `${snapshot.capturedAtLabel ?? snapshot.capturedAt} · ` +
+            `Pinnacle guest odds are delayed — snapshot, not live. Re-check before placing.`,
+        );
+        return;
+      }
       const wantOddsApi = source !== 'oddspapi';
       const wantPapi = source !== 'oddsapi';
       const [oddsKey, papiKey] = await Promise.all([getOddsApiKey(), getOddsPapiKey()]);
@@ -320,16 +337,26 @@ export default function OddsScreen() {
   }
 
   const canRefresh =
-    source === 'oddsapi' ? keyReady : source === 'oddspapi' ? papiKeyReady : keyReady || papiKeyReady;
+    source === 'board'
+      ? true
+      : source === 'oddsapi'
+        ? keyReady
+        : source === 'oddspapi'
+          ? papiKeyReady
+          : keyReady || papiKeyReady;
 
   return (
     <SafeAreaView style={S.screen}>
       <ScrollView contentContainerStyle={S.scroll} keyboardShouldPersistTaps="handled">
         <Text style={S.h1}>Sportsbook odds</Text>
         <Text style={[S.dim, { marginBottom: 12 }]}>
-          Live moneyline odds for League of Legends, merged across The Odds API and OddsPapi.
-          Refresh is manual — each tap costs requests from your monthly quotas.
+          League of Legends moneyline odds. Pinnacle board needs no key and no quota — it reads
+          a published snapshot of Pinnacle&apos;s public board (guest odds are delayed). The
+          Odds API and OddsPapi still cost quota per refresh.
         </Text>
+        {boardNote && source === 'board' && (
+          <Text style={[S.dim, { marginBottom: 12 }]}>{boardNote}</Text>
+        )}
 
         {/* -------- last saved pull: prominent, always visible -------- */}
         <LastPullBanner
@@ -352,6 +379,7 @@ export default function OddsScreen() {
           <View style={[S.row, { gap: 8 }]}>
             {(
               [
+                ['board', 'Pinnacle board (no key)'],
                 ['oddsapi', 'The Odds API'],
                 ['oddspapi', 'OddsPapi'],
                 ['both', 'Both (merged)'],
@@ -367,8 +395,8 @@ export default function OddsScreen() {
             ))}
           </View>
           <Text style={[S.faint, { marginTop: 8 }]}>
-            Both merges the two feeds per match. Neither lists LoL Play-In odds right now; the
-            union is what covers you when one of them starts.
+            Pinnacle board is a published snapshot of Pinnacle&apos;s public board — no key,
+            no quota, guest odds delayed. Both merges the two API feeds per match.
           </Text>
         </View>
 
@@ -1252,7 +1280,9 @@ function MatchCard({
     <View key={b.key} style={[styles.row, pinnedRow && styles.pinnedRow]}>
       <Text style={[S.body, { flex: 1.4, fontSize: 13 }]} numberOfLines={1}>
         {b.title}
-        {showSource && b.source ? ` · ${b.source === 'oddspapi' ? 'OddsPapi' : 'Odds API'}` : ''}
+        {showSource && b.source
+          ? ` · ${b.source === 'oddspapi' ? 'OddsPapi' : b.source === 'board' ? 'Pinnacle board' : 'Odds API'}`
+          : ''}
       </Text>
       <OddsCell
         price={b.home}
