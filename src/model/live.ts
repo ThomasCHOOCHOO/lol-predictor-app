@@ -162,6 +162,48 @@ export async function fetchLiveMatches(): Promise<LiveMatch[]> {
   return out;
 }
 
+export interface UpcomingMatch {
+  matchId: string;
+  blueCode: string;
+  redCode: string;
+  blueName: string;
+  redName: string;
+  startTimeMs: number;
+  strategy?: string;
+}
+
+/**
+ * Next unstarted Worlds matches, from the same free getSchedule endpoint
+ * the edge-watch uses (leagueId 98767975604431411). The Live tab used
+ * to list ONLY in-progress matches, so on a gap day — or between
+ * matches — it pulled nothing and looked broken, even though the feed
+ * was fine. Showing the upcoming card gives the tab something real to
+ * pull, with a pre-game probability, until a game goes live.
+ */
+export async function fetchUpcomingWorlds(limit = 8): Promise<UpcomingMatch[]> {
+  const j = await gw('getSchedule?leagueId=98767975604431411');
+  const events: any[] = j?.data?.schedule?.events ?? [];
+  const out: UpcomingMatch[] = [];
+  for (const e of events) {
+    if (e?.state !== 'unstarted') continue;
+    const ms = Date.parse(e?.startTime ?? '');
+    if (Number.isNaN(ms)) continue;
+    const teams: GwTeam[] = e?.match?.teams ?? [];
+    if (teams.length < 2) continue;
+    out.push({
+      matchId: String(e.match.id),
+      blueCode: teams[0].code ?? '',
+      redCode: teams[1].code ?? '',
+      blueName: teams[0].name ?? teams[0].code ?? '',
+      redName: teams[1].name ?? teams[1].code ?? '',
+      startTimeMs: ms,
+      strategy: e?.match?.strategy?.count ? `Bo${e.match.strategy.count}` : undefined,
+    });
+  }
+  out.sort((a, b) => a.startTimeMs - b.startTimeMs);
+  return out.slice(0, limit);
+}
+
 export interface LiveGame {
   gameId: string;
   number: number;
@@ -429,11 +471,32 @@ export interface LiveGameState {
   gameState: string; // latest frame state
 }
 
-/** Latest in-game snapshot, or null when no in_game frame exists yet. */
+/**
+ * Latest in-game snapshot, or null when no in_game frame exists yet.
+ *
+ * Empty-frame guard (bug seen live, 15 min in, all stats 0): the
+ * livestats window sometimes returns in_game frames with empty team
+ * data (both teams 0 gold / 0 kills / 0 towers). Displaying that as a
+ * real snapshot shows a 15-minute game as 0–0 and drives the live model
+ * with a 0 gold diff. So scan backwards for the last frame where BOTH
+ * teams actually have gold; if none exists, return null so the caller
+ * falls through to its feed-gap path (OCR fallback, then "feed
+ * unavailable — showing pre-game probability") instead of fake zeros.
+ * This does NOT scrape lolesports.com — it only hardens the existing
+ * livestats window feed handling.
+ */
 export function snapshot(frames: LiveFrame[]): LiveGameState | null {
   const inGame = frames.filter((f) => f.gameState === 'in_game');
   if (inGame.length === 0) return null;
-  const f = inGame[inGame.length - 1];
+  let f: LiveFrame | null = null;
+  for (let i = inGame.length - 1; i >= 0; i--) {
+    const cand = inGame[i];
+    if (cand.blueTeam.totalGold > 0 && cand.redTeam.totalGold > 0) {
+      f = cand;
+      break;
+    }
+  }
+  if (!f) return null;
   const minutes = elapsedMinutes(frames);
   return {
     minutes,

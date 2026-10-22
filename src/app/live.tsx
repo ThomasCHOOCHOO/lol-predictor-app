@@ -7,11 +7,13 @@ import {
   LiveMatch,
   MatchGameInfo,
   RoleGoldDiff,
+  UpcomingMatch,
   bucketFor,
   computeDeplNet,
   elapsedMinutes,
   fetchLiveGame,
   fetchLiveMatches,
+  fetchUpcomingWorlds,
   fetchMatchGames,
   fetchMatchScore,
   fetchOcrSnapshot,
@@ -150,6 +152,7 @@ function StatCell({ label, blue, red }: { label: string; blue: string; red: stri
 export default function LiveScreen() {
   const { result: ctxResult, calibrationMode } = usePrediction();
   const [matches, setMatches] = useState<LiveMatch[]>([]);
+  const [upcoming, setUpcoming] = useState<UpcomingMatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [match, setMatch] = useState<LiveMatch | null>(null);
@@ -203,6 +206,9 @@ export default function LiveScreen() {
   // loading/error synchronously before invoking (see the refresh button);
   // on mount the initial state already has loading=true.
   const refreshMatches = useCallback(() => {
+    // Live matches first; upcoming Worlds matches in parallel so the
+    // tab still pulls something when no game is live. Upcoming fetch
+    // failing must not blank the live list (or vice versa).
     fetchLiveMatches().then(
       (data) => {
         setMatches(data);
@@ -214,6 +220,9 @@ export default function LiveScreen() {
         setLoading(false);
       },
     );
+    fetchUpcomingWorlds()
+      .then(setUpcoming)
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -557,8 +566,60 @@ export default function LiveScreen() {
             {!loading && matches.length === 0 && !error && (
               <View style={S.card}>
                 <Text style={S.body}>No live games right now.</Text>
-                <Text style={S.dim}>Worlds 2026 Play-In starts Oct 16 — check back during a match.</Text>
+                <Text style={S.dim}>
+                  The tab only polls in-progress games, so between matches it
+                  looks empty even when the feed is fine. Upcoming Worlds
+                  matches are below — live polling starts when a game goes
+                  live, hit Refresh then.
+                </Text>
               </View>
+            )}
+            {!loading && matches.length === 0 && upcoming.length > 0 && (
+              <View style={S.card}>
+                <Text style={S.label}>Upcoming — Worlds 2026</Text>
+                {upcoming.map((u) => {
+                  const blueModel = mapTeamCode(u.blueCode) ?? null;
+                  const redModel = mapTeamCode(u.redCode) ?? null;
+                  const pBlue =
+                    blueModel && redModel
+                      ? predictMatchup(blueModel, redModel, null, {
+                          eloField: 'elo',
+                          calibration: calibrationMode,
+                        }).pBlue
+                      : null;
+                  const when = new Date(u.startTimeMs).toLocaleString('en-US', {
+                    timeZone: 'America/Toronto',
+                    weekday: 'short',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: 'numeric',
+                    minute: '2-digit',
+                    timeZoneName: 'short',
+                  });
+                  return (
+                    <View key={u.matchId} style={{ marginTop: 10 }}>
+                      <Text style={[S.h2, { marginBottom: 0 }]}>
+                        {u.blueCode} <Text style={S.faint}>vs</Text> {u.redCode}
+                      </Text>
+                      <Text style={S.dim}>
+                        {when}
+                        {u.strategy ? ` · ${u.strategy}` : ''}
+                      </Text>
+                      {pBlue !== null && blueModel && redModel && (
+                        <Text style={S.body}>
+                          Pre-game: {blueModel} {(pBlue * 100).toFixed(1)}% · {redModel}{' '}
+                          {((1 - pBlue) * 100).toFixed(1)}%
+                        </Text>
+                      )}
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+            {!loading && matches.length === 0 && upcoming.length === 0 && !error && (
+              <Text style={[S.dim, { marginBottom: 12 }]}>
+                No upcoming Worlds matches found — check back closer to the next round.
+              </Text>
             )}
             <View style={S.card}>
               <Text style={S.label}>Stream OCR fallback (optional)</Text>
